@@ -33,18 +33,18 @@ Backend runs on: http://localhost:8000
 
 ## Signal Layers (7-Layer Engine)
 
-| Layer | Name | Kya karta hai |
-|-------|------|---------------|
-| L1 | Multi-TF Trend | 3 timeframes me trend ek direction me ho tabhi signal milta hai (mandatory) |
-| L2 | CVD Divergence | Buyers/sellers ka real volume dekho — price aur volume opposite ho toh signal |
-| L3 | VWAP Deviation | Price VWAP se kitna door hai — retracement confirm karta hai |
-| L4 | DOM Imbalance | Order book me buy/sell pressure ka fark dekho |
-| L5 | RSI Extreme | RSI oversold/overbought zone me ho aur wapas palat raha ho |
-| L6 | Liquidity Sweep | Price ne pehle SL hunt kiya phir reverse hua |
-| L7 | Fair Value Gap | Price me gap (FVG) hai jahan re-entry hogi |
+| Layer | Name | What it does |
+|-------|------|--------------|
+| L1 | Multi-TF Trend | All 3 timeframes must agree on same direction — mandatory gate, no trade without this |
+| L2 | CVD Divergence | Checks real buying/selling volume — if price and volume diverge, signal confirmed |
+| L3 | VWAP Deviation | Price must be returning toward VWAP from an extreme — confirms retracement entry |
+| L4 | DOM Imbalance | Order book buy/sell pressure difference — confirms institutional interest |
+| L5 | RSI Extreme + Hook | RSI must be in oversold/overbought zone and already turning back — avoids catching falling knife |
+| L6 | Liquidity Sweep | Price swept stop losses first then reversed — smart money trap confirmed |
+| L7 | Fair Value Gap | Price trading inside an unfilled gap (FVG) — high probability fill zone |
 
-> **Score 4/7 ya usse zyada** = Trade signal active  
-> **L1 fail** = Koi trade nahi, baaki layers check nahi hote
+> **Score 4/7 or above** = Trade signal active  
+> **L1 fail** = No trade, remaining layers are skipped
 
 ## Environment Variables
 
