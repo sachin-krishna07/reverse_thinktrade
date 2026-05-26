@@ -172,11 +172,8 @@ class BotController:
                 # Max 2 positions per pair, max 14 total across all pairs
                 can_enter = (
                     result.trade_signal
-                    and total_open < 4
-                    and (
-                        (open_count == 0 and score >= MIN_SIGNAL_SCORE) or
-                        (open_count == 1 and score >= 5)
-                    )
+                    and total_open < 3
+                    and open_count == 0
                 )
 
                 if can_enter:

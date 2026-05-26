@@ -110,7 +110,7 @@ SWING = {
 # ─── Risk Rules (hardcoded, never bypass) ───────────────────
 MAX_DAILY_LOSS_PCT       = 100.0
 MAX_WEEKLY_DRAWDOWN_PCT  = 100.0
-MAX_CONSECUTIVE_LOSSES   = 3
+MAX_CONSECUTIVE_LOSSES   = 2
 COOLDOWN_MINUTES         = 30
 MAX_LEVERAGE             = 20.0  # hard ceiling — user can never go above this
 DEFAULT_LEVERAGE         = 5.0   # default if user doesn't specify
