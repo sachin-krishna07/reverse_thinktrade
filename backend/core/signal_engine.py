@@ -190,23 +190,10 @@ class SignalEngine:
         direction = result.trend_direction
         score     = 1  # Layer 1 counts
 
-        # ── Quality Gate: BTC Bias ───────────────────────────
-        # If BTC is trending, altcoin signal must match BTC direction.
-        # If BTC is ranging (neutral) or pair is BTC itself → gate skipped.
-        quality_ok = True
-
-        if pair != "BTC" and btc_direction in ("long", "short"):
-            result.btc_bias = btc_direction
-            if btc_direction != direction:
-                quality_ok = False
-                log.debug(f"{pair}: blocked by BTC bias={btc_direction} (signal={direction})")
-                # Early exit — no need to compute remaining layers
-                result.total_score      = score
-                result.signal_direction = direction
-                result.trade_signal     = False
-                return result
-        else:
-            result.btc_bias = "n/a"
+        # ── Quality Gate: BTC Bias — REMOVED ───────────────────
+        # 7-layer filter is strong enough; BTC bias was blocking valid signals.
+        quality_ok      = True
+        result.btc_bias = "n/a"
 
         # ── Layer 2: CVD Divergence ──────────────────────────
         # Use candle-close-synced CVD so price and CVD are over the same time window.
