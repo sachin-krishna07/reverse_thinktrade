@@ -31,6 +31,21 @@ npm run dev
 Frontend runs on: http://localhost:8080  
 Backend runs on: http://localhost:8000
 
+## Signal Layers (7-Layer Engine)
+
+| Layer | Name | Kya karta hai |
+|-------|------|---------------|
+| L1 | Multi-TF Trend | 3 timeframes me trend ek direction me ho tabhi signal milta hai (mandatory) |
+| L2 | CVD Divergence | Buyers/sellers ka real volume dekho — price aur volume opposite ho toh signal |
+| L3 | VWAP Deviation | Price VWAP se kitna door hai — retracement confirm karta hai |
+| L4 | DOM Imbalance | Order book me buy/sell pressure ka fark dekho |
+| L5 | RSI Extreme | RSI oversold/overbought zone me ho aur wapas palat raha ho |
+| L6 | Liquidity Sweep | Price ne pehle SL hunt kiya phir reverse hua |
+| L7 | Fair Value Gap | Price me gap (FVG) hai jahan re-entry hogi |
+
+> **Score 4/7 ya usse zyada** = Trade signal active  
+> **L1 fail** = Koi trade nahi, baaki layers check nahi hote
+
 ## Environment Variables
 
 ### Backend — `backend/.env`
