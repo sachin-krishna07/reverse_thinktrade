@@ -113,8 +113,8 @@ class TradeEngine:
         entry_fee    = sizing["position_size_usd"] * TAKER_FEE_RATE
         total_fee_est = entry_fee * 2  # entry + exit
 
-        # Gate: risk must be at least 3× total fee, else trade is fee-negative even at 1R
-        if sizing["risk_amount"] < total_fee_est * 3:
+        # Gate: risk must be at least 1.5× total fee
+        if sizing["risk_amount"] < total_fee_est * 1.5:
             log.info(f"{pair}: skipped — risk ₹{sizing['risk_amount']:.1f} too small vs fee ₹{total_fee_est:.1f}")
             return False
 
