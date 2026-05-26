@@ -1,0 +1,316 @@
+import logging
+import time
+from typing import Dict, Optional, Tuple
+
+from config import SCALPING, SWING
+from core.indicators import (
+    ema, adx, rsi, atr, vwap,
+    cvd_divergence, dom_imbalance,
+    detect_fvg, detect_liquidity_sweep,
+    ema_pullback, vwap_retracement,
+)
+from core.market_data import MarketDataManager
+
+log = logging.getLogger("signal_engine")
+
+
+class SignalResult:
+    def __init__(self):
+        self.total_score:       int   = 0
+        self.signal_direction:  str   = "none"   # "long" | "short" | "none"
+        self.trade_signal:      bool  = False
+
+        # Layer results
+        self.trend_regime:    int   = 0   # 1 or 0
+        self.trend_direction: str   = "neutral"
+        self.adx_value:       float = 0.0
+        self.ema9:            float = 0.0
+        self.ema21:           float = 0.0
+
+        self.cvd_divergence:  int   = 0
+        self.cvd_value:       float = 0.0
+
+        self.vwap_deviation:  int   = 0
+        self.vwap_value:      float = 0.0
+        self.vwap_dev_pct:    float = 0.0
+
+        self.dom_imbalance:   int   = 0
+        self.dom_ratio:       float = 1.0
+
+        self.rsi2_extreme:    int   = 0
+        self.rsi2_value:      float = 50.0
+
+        self.liquidity_sweep: int   = 0
+        self.sweep_type:      str   = ""
+
+        self.fair_value_gap:  int   = 0
+        self.fvg_type:        str   = ""
+        self.fvg_level:       float = 0.0
+
+        self.atr_value:       float = 0.0
+        self.current_price:   float = 0.0
+
+        # L8 — EMA Pullback (mandatory gate)
+        self.ema_pullback:    int   = 0   # 1 = pullback confirmed, 0 = not yet
+
+        # Quality gate results (internal — not sent to Supabase)
+        self.btc_bias:         str  = "n/a"  # long | short | n/a
+
+    def to_dict(self) -> Dict:
+        return {
+            "total_score":      self.total_score,
+            "signal_direction": self.signal_direction,
+            "trade_signal":     self.trade_signal,
+            "trend_regime":     self.trend_regime,
+            "trend_direction":  self.trend_direction,
+            "adx_value":        self.adx_value,
+            "ema9_value":       self.ema9,
+            "ema21_value":      self.ema21,
+            "cvd_divergence":   self.cvd_divergence,
+            "cvd_value":        self.cvd_value,
+            "vwap_deviation":   self.vwap_deviation,
+            "vwap_value":       self.vwap_value,
+            "vwap_dev_pct":     self.vwap_dev_pct,
+            "dom_imbalance":    self.dom_imbalance,
+            "dom_ratio":        self.dom_ratio,
+            "rsi2_extreme":     self.rsi2_extreme,
+            "rsi2_value":       self.rsi2_value,
+            "liquidity_sweep":  self.liquidity_sweep,
+            "sweep_type":       self.sweep_type,
+            "fair_value_gap":   self.fair_value_gap,
+            "fvg_type":         self.fvg_type,
+            "fvg_level":        self.fvg_level,
+            "atr_value":        self.atr_value,
+            "price":            self.current_price,
+            "ema_pullback":     self.ema_pullback,
+        }
+
+
+class SignalEngine:
+    def __init__(self, market_data: MarketDataManager):
+        self.md = market_data
+
+    def score(self, pair: str, style: str, btc_direction: str = None) -> SignalResult:
+        cfg = SCALPING if style == "scalping" else SWING
+        result = SignalResult()
+        result.current_price = self.md.get_price(pair)
+
+        if not self.md.is_ready(pair, style):
+            return result
+
+        entry_candles = self.md.get_candles(pair, cfg["entry_tf"])
+
+        if len(entry_candles) < 20:
+            return result
+
+        e_closes  = [c["close"]  for c in entry_candles]
+        e_highs   = [c["high"]   for c in entry_candles]
+        e_lows    = [c["low"]    for c in entry_candles]
+        e_volumes = [c["volume"] for c in entry_candles]
+
+        price = result.current_price or e_closes[-1]
+
+        # Always compute display metrics upfront so the UI shows real values
+        # even when L1 fails and we early-return (avoids misleading 0s in UI).
+        _entry_atr = atr(e_highs, e_lows, e_closes, cfg["atr_period"])
+        result.atr_value = round(_entry_atr, 6)
+
+        # Session VWAP: only today's UTC candles so anchor is fresh each day.
+        # Falls back to all available candles if today has < 5 candles (early session).
+        utc_day_start = int(time.time() // 86400) * 86400 * 1000  # midnight UTC in ms
+        session_mask  = [c for c in entry_candles if c["ts"] >= utc_day_start]
+        vwap_candles  = session_mask if len(session_mask) >= 5 else entry_candles
+        _vh = [c["high"]   for c in vwap_candles]
+        _vl = [c["low"]    for c in vwap_candles]
+        _vc = [c["close"]  for c in vwap_candles]
+        _vv = [c["volume"] for c in vwap_candles]
+        _e_vwap = vwap(_vh, _vl, _vc, _vv)
+        result.vwap_value   = round(_e_vwap, 6)
+        result.vwap_dev_pct = round((price - _e_vwap) / _e_vwap * 100, 4) if _e_vwap > 0 else 0.0
+
+        result.cvd_value  = round(self.md.get_cvd(pair), 4)
+        result.rsi2_value = rsi(e_closes, cfg["rsi_period"])
+
+        # ── Layer 1: Multi-TF Trend Regime (MANDATORY) ──────
+        # Checks 30m → 15m → 5m (scalping) or 4h → 1h → 30m (swing)
+        # Minimum mtf_min_align TFs must agree on same direction
+        confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
+        mtf_min     = cfg.get("mtf_min_align", 2)
+
+        tf_directions = []
+        for i, tf in enumerate(confirm_tfs):
+            tf_candles = self.md.get_candles(pair, tf)
+            if len(tf_candles) < 30:
+                tf_directions.append("neutral")
+                continue
+
+            tf_closes = [c["close"] for c in tf_candles]
+            tf_highs  = [c["high"]  for c in tf_candles]
+            tf_lows   = [c["low"]   for c in tf_candles]
+
+            tf_ema9          = ema(tf_closes, 9)
+            tf_ema21         = ema(tf_closes, 21)
+            tf_adx, tf_pdi, tf_mdi = adx(tf_highs, tf_lows, tf_closes, 14)
+
+            # Use highest TF (first in list) values for display
+            if i == 0:
+                result.adx_value = round(tf_adx, 4)
+                result.ema9      = round(tf_ema9, 6)
+                result.ema21     = round(tf_ema21, 6)
+
+            if tf_adx >= cfg["min_adx"]:
+                if tf_ema9 > tf_ema21 and tf_pdi > tf_mdi:
+                    tf_directions.append("long")
+                elif tf_ema9 < tf_ema21 and tf_mdi > tf_pdi:
+                    tf_directions.append("short")
+                else:
+                    tf_directions.append("neutral")
+            else:
+                tf_directions.append("neutral")
+
+        long_count  = tf_directions.count("long")
+        short_count = tf_directions.count("short")
+
+        if long_count >= mtf_min:
+            result.trend_direction = "long"
+            result.trend_regime    = 1
+        elif short_count >= mtf_min:
+            result.trend_direction = "short"
+            result.trend_regime    = 1
+        else:
+            result.trend_direction = "neutral"
+            result.trend_regime    = 0
+
+        # Layer 1 is mandatory — no aligned multi-TF trend = no trade
+        if not result.trend_regime:
+            result.total_score      = 0
+            result.signal_direction = "none"
+            return result
+
+        direction = result.trend_direction
+        score     = 1  # Layer 1 counts
+
+        # ── Quality Gate: BTC Bias ───────────────────────────
+        # If BTC is trending, altcoin signal must match BTC direction.
+        # If BTC is ranging (neutral) or pair is BTC itself → gate skipped.
+        quality_ok = True
+
+        if pair != "BTC" and btc_direction in ("long", "short"):
+            result.btc_bias = btc_direction
+            if btc_direction != direction:
+                quality_ok = False
+                log.debug(f"{pair}: blocked by BTC bias={btc_direction} (signal={direction})")
+                # Early exit — no need to compute remaining layers
+                result.total_score      = score
+                result.signal_direction = direction
+                result.trade_signal     = False
+                return result
+        else:
+            result.btc_bias = "n/a"
+
+        # ── Layer 2: CVD Divergence ──────────────────────────
+        # Use candle-close-synced CVD so price and CVD are over the same time window.
+        # cvd_at_close is snapshotted once per candle close (same rate as e_closes).
+        cvd_hist = self.md.get_cvd_at_close(pair, cfg["entry_tf"])
+        p_hist   = e_closes  # candle closes — aligned with cvd_at_close
+
+        if cvd_divergence(p_hist, cvd_hist, direction, lookback=10):
+            result.cvd_divergence = 1
+            score += 1
+
+        # ── Layer 3: VWAP Deviation + Retracement ───────────
+        # vwap_value/dev already set above using session candles.
+        # Retracement check also uses session candles for consistency.
+        threshold = cfg["vwap_dev_pct"]
+        price_returning = vwap_retracement(
+            _vc, _vh, _vl, _vv,
+            direction,
+            min_dev_pct=threshold * 0.8,
+            precomputed_vwap=_e_vwap,
+        )
+        if price_returning:
+            result.vwap_deviation = 1
+            score += 1
+
+        # ── Layer 4: DOM Imbalance ───────────────────────────
+        # Spoof-resistant: require majority of last 3 snapshots to agree.
+        # A single outsized order (spoof) lasts 1-2 ticks; genuine imbalance persists.
+        dom_snapshots = self.md.get_dom_history(pair)
+        if not dom_snapshots:
+            dom_snapshots = [self.md.get_orderbook(pair)]
+
+        dom_votes = []
+        dom_ratios = []
+        for snap in dom_snapshots[-3:]:
+            sig, ratio = dom_imbalance(
+                snap["bids"], snap["asks"],
+                levels=cfg["dom_levels"],
+                threshold=cfg["dom_ratio"],
+            )
+            dom_votes.append(sig)
+            dom_ratios.append(ratio)
+
+        result.dom_ratio = round(sum(dom_ratios) / len(dom_ratios), 4)
+
+        long_votes  = sum(1 for v in dom_votes if v ==  1)
+        short_votes = sum(1 for v in dom_votes if v == -1)
+        needed      = max(2, (len(dom_votes) + 1) // 2)  # majority
+
+        if direction == "long"  and long_votes  >= needed:
+            result.dom_imbalance = 1
+            score += 1
+        elif direction == "short" and short_votes >= needed:
+            result.dom_imbalance = 1
+            score += 1
+
+        # ── Layer 5: RSI Extreme + Hook ──────────────────────
+        # Level: RSI must be in extreme zone (oversold/overbought).
+        # Hook:  RSI must be turning back — current > prev for LONG,
+        #        current < prev for SHORT. Prevents entry while still falling.
+        rsi_val  = result.rsi2_value  # already computed above
+        rsi_prev = rsi(e_closes[:-1], cfg["rsi_period"])
+
+        if direction == "long" and rsi_val <= cfg["rsi_oversold"]:
+            if rsi_val >= rsi_prev:  # hook: RSI turning up from extreme
+                result.rsi2_extreme = 1
+                score += 1
+        elif direction == "short" and rsi_val >= cfg["rsi_overbought"]:
+            if rsi_val <= rsi_prev:  # hook: RSI turning down from extreme
+                result.rsi2_extreme = 1
+                score += 1
+
+        # ── Layer 6: Liquidity Sweep ─────────────────────────
+        swept = detect_liquidity_sweep(
+            e_highs, e_lows, e_closes, direction,
+            threshold=cfg["sweep_threshold"],
+        )
+        if swept:
+            result.liquidity_sweep = 1
+            result.sweep_type      = direction
+            score += 1
+
+        # ── Layer 7: Fair Value Gap ──────────────────────────
+        fvg_hit, fvg_mid = detect_fvg(e_highs, e_lows, price, direction)
+        if fvg_hit:
+            result.fair_value_gap = 1
+            result.fvg_type       = direction
+            result.fvg_level      = round(fvg_mid or 0, 6)
+            score += 1
+
+        # ── Final signal ─────────────────────────────────────
+        result.total_score      = score
+        result.signal_direction = direction
+
+        # ── L8: EMA Pullback (Mandatory Gate) ───────────────────
+        # Price must be near EMA-9 on entry TF before any trade.
+        # Long:  price pulled back near EMA-9 from above (dip before resume up)
+        # Short: price bounced near EMA-9 from below (pop before resume down)
+        pullback_ok = ema_pullback(e_closes, direction, period=9, tolerance_pct=0.0075)
+        result.ema_pullback = 1 if pullback_ok else 0
+
+        if score >= 4 and quality_ok:
+            result.trade_signal = True
+        else:
+            result.trade_signal = False
+
+        return result
