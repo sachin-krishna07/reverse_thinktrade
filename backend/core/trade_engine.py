@@ -323,7 +323,7 @@ class TradeEngine:
 
             if exit_reason:
                 # SL / breakeven / trailing → exit at sl_price (simulates real SL order).
-                # max_loss → exit at current_price (early cut, price hasn't hit real SL yet).
+                # max_loss → exit at exact -0.7R price level (simulates stop order, caps slippage).
                 # TP and 2R target → exit at current_price (market fill, no fixed order).
                 if exit_reason in ("sl", "breakeven", "trailing"):
                     exit_p = sl_price
@@ -332,8 +332,13 @@ class TradeEngine:
                     else:
                         exit_pct = (entry_price - sl_price) / entry_price
                     exit_pnl = exit_pct * pos_size_usd
+                elif exit_reason == "max_loss":
+                    # Exit at the -0.7R price level — not current price (avoids slippage)
+                    exit_p = r_price(-0.7)
+                    exit_pct = -0.7 * (risk_amount / pos_size_usd)
+                    exit_pnl = -0.7 * risk_amount
                 else:
-                    # max_loss, tp, 2r_target — all exit at current market price
+                    # tp, 2r_target — exit at current market price
                     exit_p   = current_price
                     exit_pnl = pnl
                     exit_pct = pnl_pct
