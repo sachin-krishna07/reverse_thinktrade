@@ -142,7 +142,6 @@ class BotController:
             try:
                 bias = None if pair == "BTC" else btc_direction
                 result = self._signals.score(pair, self._style, btc_direction=bias)
-                self._last_signals[pair] = result.to_dict()
 
                 # Upsert to Supabase only when score or direction changes — reduces DB writes
                 prev = self._last_signals.get(pair, {})
@@ -152,6 +151,8 @@ class BotController:
                         db.upsert_signal(pair, result.to_dict())
                     except Exception as db_err:
                         log.debug(f"Signal upsert failed [{pair}]: {db_err}")
+
+                self._last_signals[pair] = result.to_dict()
 
                 # Broadcast to WebSocket clients — quality gate fields added separately (not in DB)
                 await self._broadcast({
