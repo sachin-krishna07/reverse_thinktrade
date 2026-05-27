@@ -108,20 +108,21 @@ class BotController:
     # ─── Signal Loop ────────────────────────────────────────
 
     async def _signal_loop(self):
-        first_scan = True
+        warm_up_scans = 0          # skip entries for first 2 scans after restart
         while self._running:
             try:
-                await self._process_signals()
-                if first_scan:
-                    first_scan = False
-                    # After first full scan, push a snapshot so clients who missed
-                    # individual signal_update messages get all pairs at once.
+                await self._process_signals(allow_entry=warm_up_scans >= 2)
+                if warm_up_scans < 2:
+                    warm_up_scans += 1
+                    log.info(f"Warm-up scan {warm_up_scans}/2 — entries paused (stale signal guard)")
+                if warm_up_scans == 2:
+                    # After warm-up, push snapshot so UI gets all signals at once
                     await self._broadcast({"type": "snapshot", "data": self.snapshot()})
             except Exception as e:
                 log.error(f"Signal loop error: {e}", exc_info=True)
             await asyncio.sleep(SIGNAL_BROADCAST_INTERVAL)
 
-    async def _process_signals(self):
+    async def _process_signals(self, allow_entry: bool = True):
         if not self._pairs:
             return
 
@@ -136,6 +137,7 @@ class BotController:
             except Exception as e:
                 log.error(f"BTC pre-scan error: {e}", exc_info=True)
 
+        entered_this_cycle = False   # max 1 new trade per scan cycle
         for pair in self._pairs:
             if not self._running:
                 break
@@ -171,13 +173,12 @@ class BotController:
                 open_count   = self._engine.count_open_positions(pair)
                 total_open   = self._engine.total_open_positions()
 
-                # Rule 1: No position → enter if score >= MIN_SIGNAL_SCORE
-                # Rule 2: 1 position already open → enter ONLY if score >= 5 (pyramid)
-                # Max 2 positions per pair, max 14 total across all pairs
                 can_enter = (
-                    result.trade_signal
+                    allow_entry
+                    and result.trade_signal
                     and total_open < 3
                     and open_count == 0
+                    and not entered_this_cycle   # max 1 trade per scan cycle
                 )
 
                 if can_enter:
@@ -190,6 +191,7 @@ class BotController:
                         lambda t: log.error(f"Enter task failed: {t.exception()}")
                         if not t.cancelled() and t.exception() else None
                     )
+                    entered_this_cycle = True
             except Exception as e:
                 log.error(f"Signal processing error [{pair}]: {e}", exc_info=True)
 
