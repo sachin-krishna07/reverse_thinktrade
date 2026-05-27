@@ -20,6 +20,12 @@ class RiskManager:
         self._consecutive_losses = db.count_consecutive_losses(mode)
         log.info(f"Risk sync: consecutive losses = {self._consecutive_losses}")
 
+    def reset(self):
+        """Fresh start — clear circuit breaker and loss counter on bot restart."""
+        self._consecutive_losses = 0
+        self._cooldown_until     = None
+        log.info("Risk manager reset — fresh start")
+
     def record_trade_result(self, pnl: float):
         if pnl < 0:
             self._consecutive_losses += 1

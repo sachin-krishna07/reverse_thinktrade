@@ -67,8 +67,9 @@ class BotController:
         self._engine.set_running(True)
         self._engine.load_wallet()
 
-        # Sync consecutive loss counter
-        self._risk.sync_from_db(mode)
+        # Fresh start — clear circuit breaker and per-pair SL cooldowns
+        self._risk.reset()
+        self._engine._sl_cooldown.clear()
 
         # Init signal engine
         self._signals = SignalEngine(self._md)
