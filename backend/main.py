@@ -17,6 +17,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
+# Silence noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+
 # ─── In-memory log buffer ───────────────────────────────────
 # Captures logs from bot components and streams them to the Logs UI page.
 
