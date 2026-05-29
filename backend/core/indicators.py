@@ -171,15 +171,16 @@ def cvd_divergence(prices: List[float], cvd_values: List[float],
 
 def detect_fvg(highs: List[float], lows: List[float],
                current_price: float, direction: str,
-               min_gap_pct: float = 0.001) -> Tuple[bool, Optional[float]]:
+               min_gap_pct: float = 0.003,
+               lookback: int = 8) -> Tuple[bool, Optional[float]]:
     """Returns (fvg_detected, gap_midpoint).
-    min_gap_pct: minimum gap size as fraction of price (default 0.1%).
-    Filters out micro-gaps that are just noise.
+    min_gap_pct: minimum gap size as fraction of price (0.3% = meaningful gap only).
+    lookback: only check recent candles (8 = last 40 min on 5m, stale gaps ignored).
     """
     if len(highs) < 3:
         return False, None
 
-    for i in range(len(highs) - 3, max(len(highs) - 20, 0) - 1, -1):
+    for i in range(len(highs) - 3, max(len(highs) - lookback, 0) - 1, -1):
         c1_high = highs[i]
         c1_low  = lows[i]
         c3_high = highs[i + 2]

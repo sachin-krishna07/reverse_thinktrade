@@ -100,7 +100,8 @@ class MarketDataManager:
     async def _fetch_historical(self, pairs: List[str], style: str):
         cfg = SCALPING if style == "scalping" else SWING
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
-        tfs = list(dict.fromkeys(confirm_tfs))  # deduplicate, preserve order
+        bias_tf     = cfg.get("bias_tf")
+        tfs = list(dict.fromkeys(confirm_tfs + ([bias_tf] if bias_tf else [])))  # deduplicate, preserve order
         async with aiohttp.ClientSession() as session:
             for pair in pairs:
                 symbol = PAIRS[pair]
@@ -135,7 +136,8 @@ class MarketDataManager:
     async def _ws_loop(self, pairs: List[str], style: str):
         cfg = SCALPING if style == "scalping" else SWING
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
-        tfs = list(dict.fromkeys(confirm_tfs))  # deduplicate, preserve order
+        bias_tf     = cfg.get("bias_tf")
+        tfs = list(dict.fromkeys(confirm_tfs + ([bias_tf] if bias_tf else [])))  # deduplicate, preserve order
         streams = []
         for pair in pairs:
             sym = PAIRS[pair].lower()

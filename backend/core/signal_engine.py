@@ -191,9 +191,39 @@ class SignalEngine:
         score     = 1  # Layer 1 counts
 
         # ── Quality Gate: BTC Bias — REMOVED ───────────────────
-        # 7-layer filter is strong enough; BTC bias was blocking valid signals.
         quality_ok      = True
         result.btc_bias = "n/a"
+
+        # ── 1H Trend Bias Gate ───────────────────────────────────
+        # Before any scalp entry, 1H trend must agree with signal direction.
+        # Prevents shorting in a bullish 1H market and vice versa.
+        try:
+            h1_candles = self.md.get_candles(pair, "1h")
+            if len(h1_candles) >= 30:
+                h1_closes = [c["close"] for c in h1_candles]
+                h1_highs  = [c["high"]  for c in h1_candles]
+                h1_lows   = [c["low"]   for c in h1_candles]
+                h1_ema9   = ema(h1_closes, 9)
+                h1_ema21  = ema(h1_closes, 21)
+                h1_adx, h1_pdi, h1_mdi = adx(h1_highs, h1_lows, h1_closes, 14)
+
+                if h1_adx >= 20:
+                    if h1_ema9 > h1_ema21 and h1_pdi > h1_mdi:
+                        h1_bias = "long"
+                    elif h1_ema9 < h1_ema21 and h1_mdi > h1_pdi:
+                        h1_bias = "short"
+                    else:
+                        h1_bias = "neutral"
+
+                    # Block trade if 1H trend contradicts signal direction
+                    if h1_bias != "neutral" and h1_bias != direction:
+                        log.debug(f"{pair}: blocked by 1H bias={h1_bias} (signal={direction})")
+                        result.total_score      = score
+                        result.signal_direction = direction
+                        result.trade_signal     = False
+                        return result
+        except Exception:
+            pass  # 1H data unavailable — skip gate, don't block
 
         # ── Layer 2: CVD Divergence ──────────────────────────
         # Use candle-close-synced CVD so price and CVD are over the same time window.

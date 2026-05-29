@@ -66,6 +66,7 @@ SCALPING = {
     "trend_tf":          "15m",           # primary trend TF (legacy, used as fallback)
     "entry_tf":          "5m",            # entry signal TF
     "confirm_tfs":       ["30m", "15m", "5m"],  # multi-TF trend check (high→low)
+    "bias_tf":           "1h",            # higher TF bias gate — must agree with signal
     "mtf_min_align":     2,               # min TFs that must agree (out of 3)
     "atr_period":        14,
     "atr_sl_mult":       1.5,
