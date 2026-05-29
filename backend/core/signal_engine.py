@@ -205,17 +205,11 @@ class SignalEngine:
             result.cvd_divergence = 1
             score += 1
 
-        # ── Layer 3: VWAP Deviation + Retracement ───────────
-        # vwap_value/dev already set above using session candles.
-        # Retracement check also uses session candles for consistency.
-        threshold = cfg["vwap_dev_pct"]
-        price_returning = vwap_retracement(
-            _vc, _vh, _vl, _vv,
-            direction,
-            min_dev_pct=threshold * 0.8,
-            precomputed_vwap=_e_vwap,
-        )
-        if price_returning:
+        # ── Layer 3: VWAP Proximity (Pullback to Fair Value) ────
+        # Price must be within 0.2% of VWAP — classic "pullback to VWAP" entry.
+        # VWAP is institutional fair value; entering near it = tight SL, good R:R.
+        # Works in both directions — trend pullback confirmation.
+        if abs(result.vwap_dev_pct) <= 0.20:
             result.vwap_deviation = 1
             score += 1
 
