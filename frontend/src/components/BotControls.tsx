@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Play, Square, AlertTriangle } from "lucide-react";
+import { useExchangeRate } from "@/hooks/useExchangeRate";
 
 const ALL_PAIRS = [
   // Core
@@ -26,17 +27,28 @@ interface Props {
   onStop: () => Promise<void>;
   onForceClose: () => Promise<void>;
   hasPosition: boolean;
+  walletBalance?: number;  // USD balance from wallet
 }
 
 export default function BotControls({ running, mode: curMode, style: curStyle,
-  onStart, onStop, onForceClose, hasPosition }: Props) {
+  onStart, onStop, onForceClose, hasPosition, walletBalance }: Props) {
 
-  const [mode, setMode]             = useState("demo");
-  const [style, setStyle]           = useState("scalping");
-  const [pairs, setPairs]           = useState<string[]>(ALL_PAIRS);
-  const [capitalPct, setCapitalPct] = useState("1");
-  const [leverage, setLeverage]     = useState("5");
+  const [mode, setMode]             = useState(() => localStorage.getItem("bot_mode") || "demo");
+  const [style, setStyle]           = useState(() => localStorage.getItem("bot_style") || "scalping");
+  const [pairs, setPairs]           = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("bot_pairs") || "null") || ALL_PAIRS; }
+    catch { return ALL_PAIRS; }
+  });
+  const [capitalPct, setCapitalPct] = useState(() => localStorage.getItem("bot_capital") || "1");
+  const [leverage, setLeverage]     = useState(() => localStorage.getItem("bot_leverage") || "5");
   const [loading, setLoading]       = useState(false);
+  const { fmtINR, rate }            = useExchangeRate();
+
+  // Estimated trade size calculation
+  const estTradeUsd = walletBalance
+    ? (walletBalance * (parseFloat(capitalPct) || 0) / 100) * (parseFloat(leverage) || 1)
+    : 0;
+  const estTradeInr = estTradeUsd * (rate || 84);
 
   // Clear loading when running state confirms from WebSocket
   useEffect(() => {
@@ -44,7 +56,16 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
   }, [running]);
 
   const togglePair = (p: string) =>
-    setPairs((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
+    setPairs((prev) => {
+      const next = prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p];
+      localStorage.setItem("bot_pairs", JSON.stringify(next));
+      return next;
+    });
+
+  const handleSetMode = (m: string) => { setMode(m); localStorage.setItem("bot_mode", m); };
+  const handleSetStyle = (s: string) => { setStyle(s); localStorage.setItem("bot_style", s); };
+  const handleSetCapital = (v: string) => { setCapitalPct(v); localStorage.setItem("bot_capital", v); };
+  const handleSetLeverage = (v: string) => { setLeverage(v); localStorage.setItem("bot_leverage", v); };
 
   const handleStart = async () => {
     const pct = parseFloat(capitalPct);
@@ -53,7 +74,8 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
     try {
       setLoading(true);
       const lev = Math.min(Math.max(parseFloat(leverage) || 5, 1), 20);
-      await onStart({ mode, style, pairs, capital_pct: pct, leverage: lev });
+      const traderName = import.meta.env.VITE_TRADER_NAME || "Unknown";
+      await onStart({ mode, style, pairs, capital_pct: pct, leverage: lev, trader_name: traderName });
       // Don't clear loading here — wait for running=true via WebSocket (useEffect above)
     } catch {
       setLoading(false);
@@ -93,7 +115,7 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
         <div className="flex gap-2">
           {["demo", "live"].map((m) => (
             <button key={m} disabled={running}
-              onClick={() => setMode(m)}
+              onClick={() => handleSetMode(m)}
               className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-50 ${
                 mode === m
                   ? m === "live"
@@ -120,7 +142,7 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
         <div className="flex gap-2">
           {["scalping", "swing"].map((s) => (
             <button key={s} disabled={running}
-              onClick={() => setStyle(s)}
+              onClick={() => handleSetStyle(s)}
               className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-50 ${
                 style === s
                   ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
@@ -172,7 +194,7 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
               <input
                 type="number" min="0.1" max="100" step="0.1"
                 value={capitalPct}
-                onChange={(e) => setCapitalPct(e.target.value)}
+                onChange={(e) => handleSetCapital(e.target.value)}
                 disabled={running}
                 className="w-full bg-[#111827] border border-[#1e2433] text-white rounded-lg px-3 py-2 text-sm
                            focus:outline-none focus:border-indigo-500/60 disabled:opacity-50 transition-all"
@@ -186,7 +208,7 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
               <input
                 type="number" min="1" max="20" step="1"
                 value={leverage}
-                onChange={(e) => setLeverage(e.target.value)}
+                onChange={(e) => handleSetLeverage(e.target.value)}
                 disabled={running}
                 className="w-full bg-[#111827] border border-yellow-500/30 text-yellow-300 rounded-lg px-3 py-2 text-sm
                            focus:outline-none focus:border-yellow-500/60 disabled:opacity-50 transition-all font-bold"
@@ -195,10 +217,22 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
             </div>
           </div>
         </div>
+        {/* Estimated trade size */}
+        {estTradeUsd > 0 && (
+          <div className="flex items-center justify-between bg-[#111827] border border-[#1e2433] rounded-lg px-3 py-2">
+            <span className="text-[10px] text-gray-500">Est. trade size</span>
+            <div className="text-right">
+              <span className="text-sm font-black text-indigo-300 font-mono">
+                {fmtINR(estTradeInr, 0)}
+              </span>
+              <span className="text-[10px] text-gray-600 ml-1.5">
+                (${Math.round(estTradeUsd).toLocaleString()})
+              </span>
+            </div>
+          </div>
+        )}
         <p className="text-[11px] text-gray-600">
-          {style === "scalping"
-            ? `SL: ATR×1.5 · TP: 2R · Max pos: Balance × ${leverage}x`
-            : `SL: ATR×3 · TP: 3R · Max pos: Balance × ${leverage}x`}
+          SL: ATR×1.5 · Max loss: 1.5R · Trailing from 1R
         </p>
       </div>
 

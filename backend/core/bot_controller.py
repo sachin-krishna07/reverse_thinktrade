@@ -35,7 +35,8 @@ class BotController:
     # ─── Lifecycle ──────────────────────────────────────────
 
     async def start(self, mode: str, style: str, pairs: List[str],
-                    capital_pct: float, broadcast_cb: Callable, leverage: float = 5.0):
+                    capital_pct: float, broadcast_cb: Callable, leverage: float = 5.0,
+                    trader_name: str = "Unknown"):
         if self._running:
             log.warning("Bot already running")
             return
@@ -45,6 +46,7 @@ class BotController:
         self._pairs       = pairs
         self._capital_pct = capital_pct
         self._leverage    = leverage
+        self._trader_name = trader_name
         self._broadcast_cb = broadcast_cb
         self._running     = True
 
@@ -62,6 +64,7 @@ class BotController:
             on_update=self._broadcast,
             mode=mode,
             leverage=leverage,
+            trader_name=trader_name,
         )
         self._engine.set_price_getter(self._md.get_price)
         self._engine.set_running(True)
@@ -239,7 +242,8 @@ class BotController:
     # ─── Status / Snapshot ──────────────────────────────────
 
     def snapshot(self) -> Dict:
-        wallet = self._engine.wallet_snapshot() if self._engine else {}
+        wallet    = self._engine.wallet_snapshot() if self._engine else {}
+        positions = self._engine.positions_snapshot() if self._engine else []
         return {
             "running":      self._running,
             "mode":         self._mode,
@@ -250,6 +254,7 @@ class BotController:
             "signals":      self._last_signals,
             "has_position": self._engine.has_open_position() if self._engine else False,
             "open_pairs":   list(self._engine._open.keys()) if self._engine else [],
+            "positions":    positions,
         }
 
     async def force_close_current(self):

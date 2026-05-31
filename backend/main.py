@@ -181,6 +181,7 @@ class StartConfig(BaseModel):
     pairs:       list  = ["BTC", "ETH", "SOL", "BNB", "XRP"]
     capital_pct: float = 1.0
     leverage:    float = 5.0
+    trader_name: str   = "Unknown"
 
 
 # ─── REST Endpoints ─────────────────────────────────────────
@@ -197,6 +198,7 @@ async def start_bot(config: StartConfig):
             capital_pct=config.capital_pct,
             broadcast_cb=broadcast,
             leverage=config.leverage,
+            trader_name=config.trader_name,
         )
     )
     return {"ok": True, "msg": "Bot starting..."}

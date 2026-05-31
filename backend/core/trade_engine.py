@@ -17,11 +17,12 @@ TAKER_FEE_RATE = 0.05 / 100 * 1.18   # 0.000590
 
 
 class TradeEngine:
-    def __init__(self, risk: RiskManager, on_update: Callable, mode: str = "demo", leverage: float = 5.0):
-        self.risk       = risk
-        self.on_update  = on_update
-        self.mode       = mode
-        self.leverage   = leverage
+    def __init__(self, risk: RiskManager, on_update: Callable, mode: str = "demo", leverage: float = 5.0, trader_name: str = "Unknown"):
+        self.risk        = risk
+        self.on_update   = on_update
+        self.mode        = mode
+        self.leverage    = leverage
+        self.trader_name = trader_name
 
         # Safe defaults — overwritten by bot_controller before use
         self._running   = False
@@ -48,7 +49,8 @@ class TradeEngine:
         self._balance         = w.get("balance", 10000)
         self._initial_balance = w.get("initial_balance", 10000)
         self._total_pnl       = w.get("total_pnl", 0)
-        self._daily_pnl       = w.get("daily_pnl", 0)
+        # Recalculate daily_pnl fresh from today's IST trades — ignore stale DB value
+        self._daily_pnl       = db.get_today_pnl(self.mode)
         log.info(f"Wallet loaded: ${self._balance:.2f} ({self.mode})")
 
     # ─── Enter Trade ────────────────────────────────────────
@@ -135,6 +137,7 @@ class TradeEngine:
             "signals_at_entry":  signal.to_dict(),
             "fee":               round(entry_fee, 4),
             "signal_score":      signal_score,
+            "trader_name":       self.trader_name,
         }
 
         trade_id = await asyncio.to_thread(db.open_trade, trade_data)
@@ -459,3 +462,47 @@ class TradeEngine:
             "total_pnl_pct":   round(self._total_pnl / self._initial_balance * 100, 4)
                                if self._initial_balance > 0 else 0,
         }
+
+    def positions_snapshot(self) -> list:
+        """Snapshot of all open positions — sent to reconnecting clients."""
+        result = []
+        for pair, entries in self._open.items():
+            for e in entries:
+                current      = self._get_price(pair)
+                if current <= 0:
+                    continue
+                pos          = e.get("pos", {})
+                direction    = pos.get("direction", "long")
+                entry_price  = pos.get("entry_price", 0)
+                sl_price     = pos.get("sl_price", 0)
+                tp_price     = pos.get("tp_price", 0)
+                pos_size_usd = pos.get("position_size_usd", 0)
+                risk_amount  = pos.get("risk_amount", 1)
+
+                if direction == "long":
+                    pnl_pct = (current - entry_price) / entry_price
+                else:
+                    pnl_pct = (entry_price - current) / entry_price
+
+                pnl       = pnl_pct * pos_size_usd
+                r_current = pnl / risk_amount if risk_amount > 0 else 0
+
+                result.append({
+                    "pair":          pair,
+                    "direction":     direction,
+                    "entry":         entry_price,
+                    "current":       current,
+                    "sl":            sl_price,
+                    "tp":            tp_price,
+                    "pnl":           round(pnl, 4),
+                    "pnl_pct":       round(pnl_pct * 100, 4),
+                    "r":             round(r_current, 3),
+                    "highest_pnl":   0,
+                    "breakeven_hit": False,
+                    "profit_locked": False,
+                    "trailing_sl":   sl_price,
+                    "elapsed_sec":   0,
+                    "size_usd":      round(pos_size_usd, 2),
+                    "risk_usd":      round(risk_amount, 2),
+                })
+        return result
