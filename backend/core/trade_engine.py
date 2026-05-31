@@ -113,8 +113,8 @@ class TradeEngine:
         entry_fee    = sizing["position_size_usd"] * TAKER_FEE_RATE
         total_fee_est = entry_fee * 2  # entry + exit
 
-        # Gate: risk must be at least 1.5× total fee
-        if sizing["risk_amount"] < total_fee_est * 1.5:
+        # Gate: risk must be at least 3× total fee
+        if sizing["risk_amount"] < total_fee_est * 3.0:
             log.info(f"{pair}: skipped — risk ₹{sizing['risk_amount']:.1f} too small vs fee ₹{total_fee_est:.1f}")
             return False
 
@@ -210,15 +210,19 @@ class TradeEngine:
         trailing_sl    = sl_price
 
         # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
-        # Trailing starts only at 1R — below 1R original SL holds.
+        # Trailing starts at 1R — below 1R original SL holds.
+        # Steps get tighter as price goes higher — locks more profit on the way up.
         # Hard exit at 4R (see below).
         TRAIL_STEPS = [
-            (1.00, 0.80),   # 1R   → SL to +0.80R  (minimum lock)
-            (1.50, 1.30),   # 1.5R → SL to +1.30R
-            (2.00, 1.80),   # 2R   → SL to +1.80R
-            (2.50, 2.30),   # 2.5R → SL to +2.30R
-            (3.00, 2.80),   # 3R   → SL to +2.80R
-            (3.50, 3.30),   # 3.5R → SL to +3.30R
+            (1.00, 0.70),   # 1.0R → lock 0.70R  (gap: 0.30R)
+            (1.30, 1.00),   # 1.3R → lock 1.00R  (gap: 0.30R)
+            (1.60, 1.30),   # 1.6R → lock 1.30R  (gap: 0.30R)
+            (2.00, 1.70),   # 2.0R → lock 1.70R  (gap: 0.30R)
+            (2.30, 2.10),   # 2.3R → lock 2.10R  (gap: 0.20R) ← tighter
+            (2.60, 2.40),   # 2.6R → lock 2.40R  (gap: 0.20R)
+            (3.00, 2.80),   # 3.0R → lock 2.80R  (gap: 0.20R)
+            (3.30, 3.15),   # 3.3R → lock 3.15R  (gap: 0.15R) ← tightest
+            (3.60, 3.45),   # 3.6R → lock 3.45R  (gap: 0.15R)
         ]
 
         r_price = lambda n: (
@@ -306,9 +310,9 @@ class TradeEngine:
             # 4R → hard exit (profit booked)
             if r_current >= 4.0:
                 exit_reason = "2r_target"
-            # 0.7R hard max-loss — exit at current price before original SL (-1R)
+            # 1.5R hard max-loss — exit before original SL to cap slippage
             # Only applies before any trailing step has been triggered.
-            elif r_current <= -0.7 and trail_step == 0:
+            elif r_current <= -1.5 and trail_step == 0:
                 exit_reason = "max_loss"
             elif direction == "long":
                 if current_price <= sl_price:
@@ -333,10 +337,10 @@ class TradeEngine:
                         exit_pct = (entry_price - sl_price) / entry_price
                     exit_pnl = exit_pct * pos_size_usd
                 elif exit_reason == "max_loss":
-                    # Exit at the -0.7R price level — not current price (avoids slippage)
-                    exit_p = r_price(-0.7)
-                    exit_pct = -0.7 * (risk_amount / pos_size_usd)
-                    exit_pnl = -0.7 * risk_amount
+                    # Exit at the -1.5R price level — not current price (avoids slippage)
+                    exit_p = r_price(-1.5)
+                    exit_pct = -1.5 * (risk_amount / pos_size_usd)
+                    exit_pnl = -1.5 * risk_amount
                 else:
                     # tp, 2r_target — exit at current market price
                     exit_p   = current_price

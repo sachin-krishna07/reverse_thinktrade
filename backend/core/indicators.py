@@ -171,11 +171,11 @@ def cvd_divergence(prices: List[float], cvd_values: List[float],
 
 def detect_fvg(highs: List[float], lows: List[float],
                current_price: float, direction: str,
-               min_gap_pct: float = 0.003,
-               lookback: int = 8) -> Tuple[bool, Optional[float]]:
+               min_gap_pct: float = 0.001,
+               lookback: int = 20) -> Tuple[bool, Optional[float]]:
     """Returns (fvg_detected, gap_midpoint).
-    min_gap_pct: minimum gap size as fraction of price (0.3% = meaningful gap only).
-    lookback: only check recent candles (8 = last 40 min on 5m, stale gaps ignored).
+    min_gap_pct: minimum gap size as fraction of price.
+    lookback: how many candles back to scan for FVGs.
     """
     if len(highs) < 3:
         return False, None
@@ -339,8 +339,8 @@ def ema_pullback(closes: List[float], direction: str,
         if not (-0.005 <= dev <= tolerance_pct * 1.5):
             return False
 
-        # C2: EMA still sloping UP — trend intact during pullback
-        if ema_slope <= -0.002:   # only block on strong drop, mild negative ok
+        # C2: EMA must be sloping UP — flat or falling EMA = no trend
+        if ema_slope <= 0.0001:
             return False
 
         # C3: price was extended ABOVE EMA recently — relaxed threshold
@@ -359,6 +359,15 @@ def ema_pullback(closes: List[float], direction: str,
         if candles_higher < 1:
             return False
 
+        # C5: EMA not broken — at least 4 of last 5 candles closed ABOVE EMA
+        # Prevents entering after trend break that is just retesting EMA as resistance
+        ema_above = sum(
+            1 for i in range(2, min(7, len(closes)))
+            if closes[-i] >= ema_vals[-i]
+        )
+        if ema_above < 4:
+            return False
+
         return True
 
     if direction == "short":
@@ -366,8 +375,8 @@ def ema_pullback(closes: List[float], direction: str,
         if not (-tolerance_pct * 1.5 <= dev <= 0.005):
             return False
 
-        # C2: EMA still sloping DOWN — trend intact during bounce
-        if ema_slope >= 0.002:   # only block on strong rise, mild positive ok
+        # C2: EMA must be sloping DOWN — flat or rising EMA = no trend
+        if ema_slope >= -0.0001:
             return False
 
         # C3: price was extended BELOW EMA recently — relaxed threshold
@@ -384,6 +393,15 @@ def ema_pullback(closes: List[float], direction: str,
             if closes[-i] < current_price * 0.999
         )
         if candles_lower < 1:
+            return False
+
+        # C5: EMA not broken — at least 4 of last 5 candles closed BELOW EMA
+        # Prevents entering after trend break that is just retesting EMA as support
+        ema_below = sum(
+            1 for i in range(2, min(7, len(closes)))
+            if closes[-i] <= ema_vals[-i]
+        )
+        if ema_below < 4:
             return False
 
         return True

@@ -1,5 +1,5 @@
 import { useLocation, Link } from "react-router-dom";
-import { Wifi, WifiOff, LayoutDashboard, BarChart2, History, Terminal, Menu, X } from "lucide-react";
+import { Wifi, WifiOff, LayoutDashboard, BarChart2, History, Terminal, Menu, X, Activity } from "lucide-react";
 
 interface Props {
   connected?: boolean;
@@ -23,10 +23,12 @@ export default function AppHeader({
   const { pathname } = useLocation();
 
   return (
-    <header className="flex-shrink-0 border-b border-[#1e2433] bg-[#070a10] z-30">
-      <div className="flex items-center justify-between px-4 md:px-6 py-3">
-        {/* Left: logo + mobile menu */}
-        <div className="flex items-center gap-3">
+    <header className="flex-shrink-0 z-30" style={{ background: "linear-gradient(180deg, #060910 0%, #070c15 100%)", borderBottom: "1px solid #1a2235" }}>
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-5 md:px-8" style={{ height: "64px" }}>
+
+        {/* Left: hamburger + logo */}
+        <div className="flex items-center gap-4">
           {onSidebarToggle && (
             <button
               onClick={onSidebarToggle}
@@ -35,41 +37,84 @@ export default function AppHeader({
               {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
             </button>
           )}
-          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-sm font-bold flex-shrink-0">
-            T
-          </div>
-          <div>
-            <span className="font-bold text-white tracking-tight">ThinkTrade</span>
-            <span className="text-gray-500 text-xs ml-2 hidden sm:inline">Crypto AutoBot</span>
+
+          {/* Logo + brand */}
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="w-11 h-11 rounded-xl overflow-hidden flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, #1a2540 0%, #0f1829 100%)", border: "1px solid #2a3a5c", boxShadow: "0 0 20px rgba(99,102,241,0.3)" }}>
+                <img
+                  src="/think_trade_logo.png"
+                  alt="ThinkTrade"
+                  className="w-9 h-9 object-contain"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col leading-none">
+              <span className="text-white text-xl" style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "-0.01em" }}>
+                ThinkTrade
+              </span>
+              <span className="text-[10px] font-medium hidden sm:block"
+                style={{ color: "#4f6a9a", letterSpacing: "0.12em" }}>
+                CRYPTO AUTOBOT
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Right: status badges */}
+        {/* Right: status area */}
         <div className="flex items-center gap-3">
+
+          {/* Connection pill */}
           {connected !== undefined && (
-            <div className={`flex items-center gap-1.5 text-xs font-medium ${connected ? "text-green-400" : "text-red-400"}`}>
-              {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
-              <span className="hidden sm:inline">{connected ? "Connected" : "Offline"}</span>
+            <div className={`hidden sm:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full ${
+              connected
+                ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                : "text-red-400 bg-red-500/10 border border-red-500/20"
+            }`}>
+              {connected
+                ? <Wifi size={12} />
+                : <WifiOff size={12} />}
+              <span>{connected ? "Connected" : "Offline"}</span>
             </div>
           )}
+
+          {/* Bot status pill */}
           {running !== undefined && (
-            <div className={`flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border font-medium transition-all ${
+            <div className={`flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-full transition-all ${
               running
-                ? "border-green-500/40 bg-green-500/10 text-green-400"
-                : "border-[#1e2433] bg-[#0d1117] text-gray-600"
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${running ? "bg-green-400 animate-pulse" : "bg-gray-700"}`} />
-              <span className="hidden sm:inline">
-                {running ? `LIVE · ${mode?.toUpperCase()} · ${style?.toUpperCase()}` : "STOPPED"}
-              </span>
-              <span className="sm:hidden">{running ? "LIVE" : "OFF"}</span>
+                ? "text-emerald-300 border border-emerald-500/30"
+                : "text-gray-500 border border-white/5"
+            }`}
+              style={running ? {
+                background: "linear-gradient(135deg, rgba(16,185,129,0.12) 0%, rgba(16,185,129,0.06) 100%)",
+                boxShadow: "0 0 20px rgba(16,185,129,0.15)"
+              } : {
+                background: "rgba(255,255,255,0.03)"
+              }}>
+
+              {running ? (
+                <>
+                  <Activity size={12} className="animate-pulse" />
+                  <span className="hidden sm:inline tracking-widest">
+                    {mode?.toUpperCase()} · {style?.toUpperCase()}
+                  </span>
+                  <span className="sm:hidden">LIVE</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+                  <span>STOPPED</span>
+                </>
+              )}
             </div>
           )}
         </div>
       </div>
 
       {/* Nav tabs */}
-      <div className="flex border-t border-[#1e2433] px-4 md:px-6">
+      <div className="flex px-5 md:px-8" style={{ borderTop: "1px solid #111827" }}>
         {TABS.map((tab) => {
           const active = pathname === tab.path;
           const Icon   = tab.icon;
@@ -77,14 +122,19 @@ export default function AppHeader({
             <Link
               key={tab.path}
               to={tab.path}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold border-b-2 transition-all ${
+              className={`relative flex items-center gap-2 px-5 py-3 text-xs font-semibold transition-all ${
                 active
-                  ? "border-indigo-500 text-indigo-400"
-                  : "border-transparent text-gray-500 hover:text-gray-300 hover:border-gray-600"
+                  ? "text-indigo-400"
+                  : "text-gray-600 hover:text-gray-300"
               }`}
             >
               <Icon size={13} />
               {tab.label}
+              {/* Active underline with glow */}
+              {active && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full"
+                  style={{ background: "linear-gradient(90deg, transparent, #6366f1, transparent)", boxShadow: "0 0 8px #6366f1" }} />
+              )}
             </Link>
           );
         })}

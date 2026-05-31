@@ -102,12 +102,22 @@ class MarketDataManager:
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
         bias_tf     = cfg.get("bias_tf")
         tfs = list(dict.fromkeys(confirm_tfs + ([bias_tf] if bias_tf else [])))  # deduplicate, preserve order
+
+        sem = asyncio.Semaphore(3)  # max 3 parallel API calls — safe under Binance rate limit
+
+        async def fetch_with_sem(session, pair, symbol, tf):
+            async with sem:
+                await self._fetch_klines(session, pair, symbol, tf)
+                await asyncio.sleep(0.05)  # small delay per slot
+
         async with aiohttp.ClientSession() as session:
-            for pair in pairs:
-                symbol = PAIRS[pair]
-                for tf in tfs:
-                    await self._fetch_klines(session, pair, symbol, tf)
-                    await asyncio.sleep(0.15)  # rate limit
+            tasks = [
+                fetch_with_sem(session, pair, PAIRS[pair], tf)
+                for pair in pairs
+                for tf in tfs
+            ]
+            await asyncio.gather(*tasks)
+            log.info(f"Historical fetch complete — {len(tasks)} streams fetched in parallel")
 
     async def _fetch_klines(self, session: aiohttp.ClientSession,
                              pair: str, symbol: str, tf: str):

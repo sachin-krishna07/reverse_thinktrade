@@ -171,10 +171,14 @@ class SignalEngine:
         long_count  = tf_directions.count("long")
         short_count = tf_directions.count("short")
 
-        if long_count >= mtf_min:
+        # Entry TF (last in confirm_tfs = 5m) MUST agree with signal direction.
+        # Prevents lagging 30m/15m EMAs from triggering a trade when 5m is opposite.
+        entry_tf_dir = tf_directions[-1] if tf_directions else "neutral"
+
+        if long_count >= mtf_min and entry_tf_dir == "long":
             result.trend_direction = "long"
             result.trend_regime    = 1
-        elif short_count >= mtf_min:
+        elif short_count >= mtf_min and entry_tf_dir == "short":
             result.trend_direction = "short"
             result.trend_regime    = 1
         else:
@@ -235,11 +239,14 @@ class SignalEngine:
             result.cvd_divergence = 1
             score += 1
 
-        # ── Layer 3: VWAP Proximity (Pullback to Fair Value) ────
-        # Price must be within 0.2% of VWAP — classic "pullback to VWAP" entry.
-        # VWAP is institutional fair value; entering near it = tight SL, good R:R.
-        # Works in both directions — trend pullback confirmation.
-        if abs(result.vwap_dev_pct) <= 0.20:
+        # ── Layer 3: VWAP Retracement ────────────────────────
+        # Price must have been extended from VWAP and now returning toward it.
+        # Confirms real mean reversion — not just proximity noise.
+        if vwap_retracement(
+            e_closes, e_highs, e_lows, e_volumes, direction,
+            min_dev_pct=cfg["vwap_dev_pct"],
+            precomputed_vwap=result.vwap_value,
+        ):
             result.vwap_deviation = 1
             score += 1
 
@@ -316,10 +323,11 @@ class SignalEngine:
         # Price must be near EMA-9 on entry TF before any trade.
         # Long:  price pulled back near EMA-9 from above (dip before resume up)
         # Short: price bounced near EMA-9 from below (pop before resume down)
+        # Also checks: EMA not flat, EMA not broken in last 5 candles
         pullback_ok = ema_pullback(e_closes, direction, period=9, tolerance_pct=0.0075)
         result.ema_pullback = 1 if pullback_ok else 0
 
-        if score >= 4 and quality_ok:
+        if score >= 4 and quality_ok and pullback_ok:
             result.trade_signal = True
         else:
             result.trade_signal = False

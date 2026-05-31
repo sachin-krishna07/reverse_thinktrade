@@ -70,13 +70,13 @@ SCALPING = {
     "mtf_min_align":     2,               # min TFs that must agree (out of 3)
     "atr_period":        14,
     "atr_sl_mult":       1.5,
-    "atr_tp_mult":       3.0,
+    "atr_tp_mult":       20.0,  # effectively disabled — exits via trailing SL only
     "max_hold_sec":      None,  # disabled — exit only via SL / TP / trailing SL
     "min_adx":           20,              # lowered from 25 — 25 was blocking valid trends (e.g. ADX 24.3)
     "rsi_period":        5,
     "rsi_oversold":      25,              # slightly relaxed from 20 — RSI rarely hits 20 on 5m
     "rsi_overbought":    75,              # slightly relaxed from 80 — catch overbought earlier
-    "vwap_dev_pct":      0.15,            # lowered from 0.2 — ETH/BTC deviations often under 0.2%
+    "vwap_dev_pct":      0.30,            # raised from 0.15 — requires stronger VWAP extension before retracement fires
     "dom_ratio":         1.5,             # lowered from 2.0 — 2:1 orderbook imbalance is too rare
     "dom_levels":        10,
     "fvg_candles":       3,

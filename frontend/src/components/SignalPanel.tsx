@@ -8,20 +8,22 @@ interface Props {
 }
 
 const LAYERS = [
-  { key: "trend_regime",    label: "L1 Trend ",    weight: "MANDATORY" },
-  { key: "cvd_divergence",  label: "L2 CVD Divergence",  weight: "HIGH"      },
-  { key: "vwap_deviation",  label: "L3 VWAP Deviation",  weight: "MEDIUM"    },
-  { key: "dom_imbalance",   label: "L4 DOM Imbalance",   weight: "MEDIUM"    },
-  { key: "rsi2_extreme",    label: "L5 RSI Extreme",     weight: "MEDIUM"    },
-  { key: "liquidity_sweep", label: "L6 Liq Sweep",       weight: "HIGH"      },
-  { key: "fair_value_gap",  label: "L7 Fair Value Gap",  weight: "HIGH"      },
+  { key: "trend_regime",    label: "L1 Trend ",           weight: "MANDATORY" },
+  { key: "cvd_divergence",  label: "L2 CVD Divergence",   weight: "HIGH"      },
+  { key: "vwap_deviation",  label: "L3 VWAP Deviation",   weight: "MEDIUM"    },
+  { key: "dom_imbalance",   label: "L4 DOM Imbalance",    weight: "MEDIUM"    },
+  { key: "rsi2_extreme",    label: "L5 RSI Extreme",      weight: "MEDIUM"    },
+  { key: "liquidity_sweep", label: "L6 Liq Sweep",        weight: "HIGH"      },
+  { key: "fair_value_gap",  label: "L7 Fair Value Gap",   weight: "HIGH"      },
 ];
 
 const WEIGHT_COLOR: Record<string, string> = {
   MANDATORY: "text-yellow-400",
   HIGH:      "text-orange-400",
   MEDIUM:    "text-blue-400",
+  GATE:      "text-purple-400",
 };
+
 
 function fmt(n: number | undefined, dec = 2) {
   if (n === undefined || n === null) return "—";
@@ -99,9 +101,10 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
     );
   }
 
-  const score      = sig.total_score || 0;
-  const dir        = sig.signal_direction || "none";
-  const canTrade   = score >= 4 && sig.trend_regime === 1;
+  const score       = sig.total_score || 0;
+  const dir         = sig.signal_direction || "none";
+  const l8Pass      = sig.ema_pullback === 1;
+  const canTrade    = score >= 4 && sig.trend_regime === 1;
 
   const dirColor =
     dir === "long"  ? "text-green-400 bg-green-500/10" :
@@ -160,29 +163,36 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
         </div>
       </div>
 
-      {/* Layers */}
+      {/* Layers L1–L7 */}
       <div className="grid grid-cols-2 gap-x-2">
         {LAYERS.map((l) => (
           <LayerDetail key={l.key} sig={sig} layer={l} />
         ))}
       </div>
 
+      {/* L8 — EMA Pullback Gate (full width, separate row) */}
+      <div className={`flex items-center gap-2 py-1.5 mt-1 rounded-lg px-2 ${
+        l8Pass ? "bg-green-500/10 border border-green-500/30" : "bg-[#1a2035] border border-[#1e2433]"
+      }`}>
+        <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 text-xs font-bold ${
+          l8Pass ? "bg-green-500/20 text-green-400" : "bg-red-500/10 text-red-500/60"
+        }`}>
+          {l8Pass ? "✓" : "✗"}
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-medium text-white">L8 EMA Pullback</span>
+            <span className="text-[9px] font-bold text-purple-400">GATE</span>
+          </div>
+          <span className={`text-[10px] ${l8Pass ? "text-green-400/70" : "text-gray-500"}`}>
+            {l8Pass ? "Price at EMA-9 pullback zone" : "Waiting for pullback to EMA-9"}
+          </span>
+        </div>
+      </div>
+
       {/* Execution gate status */}
       {score >= 4 && sig.trend_regime === 1 && (
         <div className="mt-3 space-y-1.5">
-          {/* BTC bias badge */}
-          {sig.btc_bias && sig.btc_bias !== "n/a" && (
-            <div className="flex gap-1.5">
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                sig.btc_bias === dir
-                  ? "bg-green-500/10 border-green-500/25 text-green-400"
-                  : "bg-red-500/10 border-red-500/25 text-red-400"
-              }`}>
-                BTC {sig.btc_bias === dir ? "✓" : "✗"}
-              </span>
-            </div>
-          )}
-
           {/* Final status banner */}
           {sig.trade_signal ? (
             <div className="flex items-center justify-center gap-2 py-2 rounded-lg
@@ -190,9 +200,14 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
               ● ENTRY SIGNAL — {dir.toUpperCase()} {score}/7
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-2 py-1.5 rounded-lg
+            <div className="flex flex-col items-center gap-1 py-2 rounded-lg
                             bg-orange-500/10 border border-orange-500/25 text-orange-400 text-xs font-semibold">
-              ⚠ SIGNAL BLOCKED
+              <span>⚠ SIGNAL BLOCKED</span>
+              {!l8Pass && (
+                <span className="text-[10px] text-purple-400 font-normal">
+                  L8: Waiting for EMA-9 pullback
+                </span>
+              )}
             </div>
           )}
         </div>

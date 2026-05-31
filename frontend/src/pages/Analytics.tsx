@@ -69,10 +69,18 @@ function ChartTooltip({ active, payload, label, fmt }: any) {
 }
 
 export default function Analytics() {
-  const [mode, setMode]     = useState<"demo" | "live">("demo");
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [mode, setMode]         = useState<"demo" | "live">("demo");
+  const [trades, setTrades]     = useState<Trade[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [equityPeriod, setEquityPeriod] = useState<string>("All");
   const { fmtINR } = useExchangeRate();
+
+  const PERIODS = ["1D", "7D", "1M", "3M", "6M", "9M", "1Y", "All"];
+
+  const periodDays: Record<string, number> = {
+    "1D": 1, "7D": 7, "1M": 30, "3M": 90,
+    "6M": 180, "9M": 270, "1Y": 365,
+  };
 
   const fetchTrades = async (m: string) => {
     setLoading(true);
@@ -203,6 +211,84 @@ export default function Analytics() {
   }, [trades]);
 
   const equityUp = stats.totalPnl >= 0;
+  const [hoveredDay, setHoveredDay] = useState<{ date: string; pnl: number; x: number; y: number } | null>(null);
+
+  // ── Trade Heatmap ─────────────────────────────────────────
+  const heatmapData = useMemo(() => {
+    // Group trades by date → daily net PnL
+    const dayMap: Record<string, number> = {};
+    trades.forEach(t => {
+      const day = t.created_at?.slice(0, 10);
+      if (!day) return;
+      dayMap[day] = (dayMap[day] || 0) + (t.net_pnl || t.pnl || 0);
+    });
+
+    // Build 52-week grid ending today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    // Start from Sunday 52 weeks ago
+    const start = new Date(today);
+    start.setDate(start.getDate() - 364);
+    // Align to Sunday
+    start.setDate(start.getDate() - start.getDay());
+
+    const weeks: { date: string; pnl: number | null }[][] = [];
+    const cur = new Date(start);
+
+    while (cur <= today) {
+      const week: { date: string; pnl: number | null }[] = [];
+      for (let d = 0; d < 7; d++) {
+        const iso = cur.toISOString().slice(0, 10);
+        week.push({ date: iso, pnl: dayMap[iso] ?? null });
+        cur.setDate(cur.getDate() + 1);
+      }
+      weeks.push(week);
+    }
+
+    // Max abs PnL for intensity scaling
+    const vals = Object.values(dayMap).map(Math.abs);
+    const maxPnl = vals.length > 0 ? Math.max(...vals) : 1;
+
+    return { weeks, maxPnl, dayMap };
+  }, [trades]);
+
+  function heatColor(pnl: number | null, maxPnl: number): string {
+    if (pnl === null) return "#111827";          // no trade
+    if (Math.abs(pnl) < 0.01) return "#1a2035"; // ~zero
+    const intensity = Math.min(Math.abs(pnl) / maxPnl, 1);
+    if (pnl > 0) {
+      // green: light → dark
+      if (intensity < 0.25) return "#14532d";
+      if (intensity < 0.50) return "#16a34a";
+      if (intensity < 0.75) return "#22c55e";
+      return "#4ade80";
+    } else {
+      // red: light → dark
+      if (intensity < 0.25) return "#450a0a";
+      if (intensity < 0.50) return "#b91c1c";
+      if (intensity < 0.75) return "#ef4444";
+      return "#f87171";
+    }
+  }
+
+  // Filtered equity for selected period
+  const filteredEquity = useMemo(() => {
+    const days = periodDays[equityPeriod];
+    const filtered = days
+      ? trades.filter(t => {
+          const diff = (Date.now() - new Date(t.created_at).getTime()) / 86400000;
+          return diff <= days;
+        })
+      : trades;
+    let running = 0;
+    return filtered.map((t, i) => {
+      running += t.net_pnl || t.pnl || 0;
+      return { i: i + 1, pnl: Math.round(running * 100) / 100 };
+    });
+  }, [trades, equityPeriod]);
+
+  const filteredPnl = filteredEquity.length > 0 ? filteredEquity[filteredEquity.length - 1].pnl : 0;
+  const filteredUp  = filteredPnl >= 0;
 
   return (
     <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">
@@ -323,39 +409,149 @@ export default function Analytics() {
 
             {/* ── Equity Curve ────────────────────────────── */}
             <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-[#1e2433] flex items-center justify-between">
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-[#1e2433] flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
                   <Activity size={14} className="text-indigo-400" />
                   <span className="text-sm font-bold text-white">Equity Curve</span>
+                  <span className={`text-xs font-bold font-mono px-2.5 py-1 rounded-lg ${
+                    filteredUp ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"
+                  }`}>
+                    {filteredUp ? "+" : ""}{fmtINR(filteredPnl, 0)}
+                  </span>
                 </div>
-                <span className={`text-xs font-bold font-mono px-2.5 py-1 rounded-lg ${
-                  equityUp ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"
-                }`}>
-                  {equityUp ? "+" : ""}{fmtINR(stats.totalPnl, 0)}
-                </span>
+                {/* Period filter buttons */}
+                <div className="flex gap-1 bg-[#080b12] border border-[#1e2433] rounded-lg p-1">
+                  {PERIODS.map(p => (
+                    <button key={p} onClick={() => setEquityPeriod(p)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+                        equityPeriod === p
+                          ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
+                          : "text-gray-600 hover:text-gray-400"
+                      }`}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="p-4 h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={stats.equity} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-                    <defs>
-                      <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={equityUp ? "#22c55e" : "#ef4444"} stopOpacity={0.3} />
-                        <stop offset="95%" stopColor={equityUp ? "#22c55e" : "#ef4444"} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis dataKey="i" hide />
-                    <YAxis hide />
-                    <Tooltip content={<ChartTooltip fmt={(v: number) => fmtINR(v)} />} />
-                    <Area
-                      type="monotone" dataKey="pnl"
-                      stroke={equityUp ? "#22c55e" : "#ef4444"}
-                      strokeWidth={2}
-                      fill="url(#pnlGrad)"
-                      dot={false} activeDot={{ r: 4, fill: equityUp ? "#22c55e" : "#ef4444" }}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
+              {/* Chart */}
+              <div className="p-4 h-96">
+                {filteredEquity.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-gray-600 text-xs">
+                    No trades in this period
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={filteredEquity} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={filteredUp ? "#22c55e" : "#ef4444"} stopOpacity={0.3} />
+                          <stop offset="95%" stopColor={filteredUp ? "#22c55e" : "#ef4444"} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="i" hide />
+                      <YAxis hide />
+                      <Tooltip content={<ChartTooltip fmt={(v: number) => fmtINR(v)} />} />
+                      <Area
+                        type="monotone" dataKey="pnl"
+                        stroke={filteredUp ? "#22c55e" : "#ef4444"}
+                        strokeWidth={2}
+                        fill="url(#pnlGrad)"
+                        dot={false} activeDot={{ r: 4, fill: filteredUp ? "#22c55e" : "#ef4444" }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
               </div>
+            </div>
+
+            {/* ── Trade Heatmap ───────────────────────────── */}
+            <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden relative">
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-[#1e2433] flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <Activity size={14} className="text-indigo-400" />
+                  <span className="text-sm font-bold text-white">Daily P&L Heatmap</span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-gray-300 font-medium">
+                  <span>Loss</span>
+                  {["#b91c1c","#ef4444","#1a2035","#16a34a","#4ade80"].map((c,i) => (
+                    <div key={i} className="w-4 h-4 rounded-sm border border-white/5" style={{ backgroundColor: c }} />
+                  ))}
+                  <span>Profit</span>
+                </div>
+              </div>
+
+              {/* Grid */}
+              <div className="px-5 py-4">
+                <div className="flex w-full">
+                  {/* Day labels */}
+                  <div className="flex flex-col gap-[4px] pr-3 flex-shrink-0" style={{ paddingTop: "24px" }}>
+                    {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d, i) => (
+                      <div key={i} className="text-[11px] text-white font-medium flex items-center" style={{ height: "18px" }}>
+                        {d}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Weeks — fill full width */}
+                  <div className="flex flex-col gap-[4px] flex-1 min-w-0">
+                    {/* Month labels */}
+                    <div className="flex w-full mb-1">
+                      {heatmapData.weeks.map((week, wi) => {
+                        const d = new Date(week[0].date);
+                        const show = d.getDate() <= 7;
+                        return (
+                          <div key={wi} className="flex-1 text-[11px] text-white font-semibold text-center truncate">
+                            {show ? ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()] : ""}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Cells: 7 rows × N weeks */}
+                    {[0,1,2,3,4,5,6].map(dayIdx => (
+                      <div key={dayIdx} className="flex w-full gap-[3px]">
+                        {heatmapData.weeks.map((week, wi) => {
+                          const cell = week[dayIdx];
+                          const color = heatColor(cell.pnl, heatmapData.maxPnl);
+                          return (
+                            <div key={wi}
+                              className="flex-1 rounded-sm cursor-pointer transition-all hover:ring-2 hover:ring-white/40 hover:z-10 relative"
+                              style={{ backgroundColor: color, height: "18px" }}
+                              onMouseEnter={e => {
+                                if (cell.pnl !== null) {
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  const x = Math.min(rect.left + rect.width / 2, window.innerWidth - 180);
+                                  const y = rect.top - 10;
+                                  setHoveredDay({ date: cell.date, pnl: cell.pnl, x, y });
+                                }
+                              }}
+                              onMouseLeave={() => setHoveredDay(null)}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Hover popup */}
+              {hoveredDay && (
+                <div className="fixed z-50 pointer-events-none transition-all"
+                  style={{ left: hoveredDay.x, top: hoveredDay.y - 75, transform: "translateX(-50%)" }}>
+                  <div className="bg-[#0d1117] border border-[#2a3045] rounded-xl px-4 py-3 shadow-2xl min-w-[160px]">
+                    <div className="text-[10px] text-gray-400 mb-1 font-medium">{hoveredDay.date}</div>
+                    <div className={`text-xl font-black font-mono ${hoveredDay.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                      {hoveredDay.pnl >= 0 ? "+" : ""}{fmtINR(hoveredDay.pnl, 0)}
+                    </div>
+                    <div className={`text-[11px] font-semibold mt-1 ${hoveredDay.pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                      {hoveredDay.pnl >= 0 ? "✓ Profit day" : "✗ Loss day"}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── Insights ────────────────────────────────── */}
