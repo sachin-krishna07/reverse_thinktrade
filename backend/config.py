@@ -69,7 +69,7 @@ SCALPING = {
     "bias_tf":           "1h",            # higher TF bias gate — must agree with signal
     "mtf_min_align":     2,               # min TFs that must agree (out of 3)
     "atr_period":        14,
-    "atr_sl_mult":       1.5,
+    "atr_sl_mult":       1.35,
     "atr_tp_mult":       20.0,  # effectively disabled — exits via trailing SL only
     "max_hold_sec":      None,  # disabled — exit only via SL / TP / trailing SL
     "min_adx":           20,              # lowered from 25 — 25 was blocking valid trends (e.g. ADX 24.3)

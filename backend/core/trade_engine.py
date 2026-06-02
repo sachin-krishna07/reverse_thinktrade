@@ -217,15 +217,12 @@ class TradeEngine:
         # Steps get tighter as price goes higher — locks more profit on the way up.
         # Hard exit at 4R (see below).
         TRAIL_STEPS = [
-            (1.00, 0.70),   # 1.0R → lock 0.70R  (gap: 0.30R)
-            (1.30, 1.00),   # 1.3R → lock 1.00R  (gap: 0.30R)
-            (1.60, 1.30),   # 1.6R → lock 1.30R  (gap: 0.30R)
+            (0.70, 0.00),   # 0.7R → breakeven (SL moves to entry)
+            (1.20, 0.90),   # 1.2R → lock 0.90R  (gap: 0.30R)
+            (1.50, 1.20),   # 1.5R → lock 1.20R  (gap: 0.30R)
             (2.00, 1.70),   # 2.0R → lock 1.70R  (gap: 0.30R)
-            (2.30, 2.10),   # 2.3R → lock 2.10R  (gap: 0.20R) ← tighter
-            (2.60, 2.40),   # 2.6R → lock 2.40R  (gap: 0.20R)
-            (3.00, 2.80),   # 3.0R → lock 2.80R  (gap: 0.20R)
-            (3.30, 3.15),   # 3.3R → lock 3.15R  (gap: 0.15R) ← tightest
-            (3.60, 3.45),   # 3.6R → lock 3.45R  (gap: 0.15R)
+            (2.40, 2.00),   # 2.4R → lock 2.00R  (gap: 0.40R)
+            (2.70, 2.50),   # 2.7R → lock 2.50R  (gap: 0.20R)
         ]
 
         r_price = lambda n: (
@@ -315,7 +312,7 @@ class TradeEngine:
                 exit_reason = "2r_target"
             # 1.5R hard max-loss — exit before original SL to cap slippage
             # Only applies before any trailing step has been triggered.
-            elif r_current <= -1.5 and trail_step == 0:
+            elif r_current <= -0.9 and trail_step == 0:
                 exit_reason = "max_loss"
             elif direction == "long":
                 if current_price <= sl_price:
