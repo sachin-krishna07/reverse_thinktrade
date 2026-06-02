@@ -389,10 +389,10 @@ class TradeEngine:
         )
         await asyncio.to_thread(db.close_position, position_id)
 
-        # Wallet balance reflects net P&L (after fees)
-        self._balance   += net_pnl
-        self._total_pnl += net_pnl
-        self._daily_pnl += net_pnl
+        # Wallet — always recalculate from DB to stay accurate
+        self._total_pnl = await asyncio.to_thread(db.get_total_pnl, self.mode)
+        self._daily_pnl = await asyncio.to_thread(db.get_today_pnl, self.mode)
+        self._balance   = self._initial_balance + self._total_pnl
         await asyncio.to_thread(
             db.update_wallet, self.mode, self._balance,
             self._total_pnl, self._initial_balance, self._daily_pnl

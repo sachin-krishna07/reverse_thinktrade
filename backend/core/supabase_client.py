@@ -1,6 +1,18 @@
 from supabase import create_client, Client
 from config import SUPABASE_URL, SUPABASE_KEY
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
+
+def _ist_today_utc_start() -> str:
+    """Return UTC ISO string of IST midnight (start of today in IST)."""
+    now_ist    = datetime.now(IST)
+    ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    return ist_midnight.astimezone(timezone.utc).isoformat()
+
+def _ist_date() -> str:
+    """Return today's date string in IST (YYYY-MM-DD)."""
+    return datetime.now(IST).date().isoformat()
 from typing import Optional, Dict, Any
 import logging
 
@@ -100,13 +112,21 @@ def count_consecutive_losses(mode: str) -> int:
             break
     return count
 
+def get_total_pnl(mode: str) -> float:
+    result = get_client().table("trades")\
+        .select("net_pnl")\
+        .eq("mode", mode)\
+        .eq("status", "closed")\
+        .execute()
+    return sum(r["net_pnl"] for r in (result.data or []) if r["net_pnl"] is not None)
+
 def get_today_pnl(mode: str) -> float:
-    today = datetime.now(timezone.utc).date().isoformat()
+    ist_start = _ist_today_utc_start()  # IST midnight in UTC
     result = get_client().table("trades")\
         .select("pnl")\
         .eq("mode", mode)\
         .eq("status", "closed")\
-        .gte("exit_time", today)\
+        .gte("exit_time", ist_start)\
         .execute()
     return sum(r["pnl"] for r in (result.data or []) if r["pnl"] is not None)
 
@@ -198,12 +218,13 @@ def get_logs_from_db(limit: int = 300, level: str = "", name: str = "") -> list:
 # ─── Performance ─────────────────────────────────────────────
 
 def upsert_performance(mode: str) -> None:
-    today = datetime.now(timezone.utc).date().isoformat()
+    today     = _ist_date()           # IST date string for the record key
+    ist_start = _ist_today_utc_start() # IST midnight in UTC for filtering
     trades_result = get_client().table("trades")\
         .select("pnl, r_multiple")\
         .eq("mode", mode)\
         .eq("status", "closed")\
-        .gte("exit_time", today)\
+        .gte("exit_time", ist_start)\
         .execute()
     rows = trades_result.data or []
     total   = len(rows)
