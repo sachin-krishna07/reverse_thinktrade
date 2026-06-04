@@ -1,9 +1,14 @@
-import { WalletData } from "@/hooks/useBotSocket";
+import { useEffect, useState } from "react";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 interface Props {
-  wallet: WalletData | null;
   mode: string;
 }
 
@@ -19,15 +24,53 @@ function Stat({ label, value, sub, up }: { label: string; value: string; sub?: s
   );
 }
 
-export default function WalletCard({ wallet, mode }: Props) {
-  const balance   = wallet?.balance ?? 0;
-  const initial   = wallet?.initial_balance ?? 100000;
-  const totalPnl  = wallet?.total_pnl ?? 0;
-  const dailyPnl  = wallet?.daily_pnl ?? 0;
-  const totalPct  = wallet?.total_pnl_pct ?? 0;
+export default function WalletCard({ mode: modeProp }: Props) {
+  const mode = modeProp || "demo";
   const { fmtINR } = useExchangeRate();
+  const [wallet, setWallet] = useState<any>(null);
 
-  const isDemo = mode === "demo";
+  const fetchWallet = async () => {
+    if (mode === "live") {
+      // Live mode — fetch real Binance balance from backend
+      try {
+        const res = await fetch(`${import.meta.env.VITE_BOT_API_URL}/api/wallet?mode=live`);
+        const data = await res.json();
+        if (data) setWallet(data);
+      } catch (e) {
+        console.error("Failed to fetch live wallet", e);
+      }
+    } else {
+      const { data } = await supabase
+        .from("wallet")
+        .select("*")
+        .eq("mode", mode)
+        .limit(1)
+        .single();
+      if (data) setWallet(data);
+    }
+  };
+
+  useEffect(() => {
+    fetchWallet();
+
+    // Realtime subscription
+    const channel = supabase
+      .channel("wallet_realtime")
+      .on("postgres_changes", {
+        event: "*", schema: "public", table: "wallet",
+        filter: `mode=eq.${mode}`,
+      }, () => fetchWallet())
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [mode]);
+
+  const balance  = wallet?.balance ?? 0;
+  const initial  = wallet?.initial_balance ?? 100000;
+  const totalPnl = wallet?.total_pnl ?? 0;
+  const dailyPnl = wallet?.daily_pnl ?? 0;
+  const totalPct = wallet?.total_pnl_pct ?? 0;
+  const isDemo   = mode === "demo";
 
   return (
     <div className="bg-[#0f1117] border border-[#1e2433] rounded-xl p-4 space-y-3">
@@ -57,12 +100,7 @@ export default function WalletCard({ wallet, mode }: Props) {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 gap-2">
-        <Stat
-          label="Today's P&L"
-          value={`${dailyPnl >= 0 ? "+" : ""}${fmtINR(dailyPnl)}`}
-          up={dailyPnl >= 0}
-        />
+      <div className="grid grid-cols-1 gap-2">
         <Stat
           label="Starting"
           value={fmtINR(initial)}

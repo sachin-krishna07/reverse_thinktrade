@@ -109,78 +109,99 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
 
       <div className="h-px bg-[#1e2433]" />
 
-      {/* Mode */}
-      <div className="space-y-2">
-        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Mode</label>
+      {running ? (
+        /* ── Bot running: show compact mode + style info ── */
         <div className="flex gap-2">
-          {["demo", "live"].map((m) => (
-            <button key={m} disabled={running}
-              onClick={() => handleSetMode(m)}
-              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-50 ${
-                mode === m
-                  ? m === "live"
-                    ? "bg-red-500/15 border border-red-500/40 text-red-300"
-                    : "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
-                  : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-300 hover:border-[#2a3045]"
-              }`}>
-              {m === "demo" ? "DEMO" : "⚡ LIVE"}
-            </button>
-          ))}
+          <div className="flex-1 bg-[#111827] border border-[#1e2433] rounded-lg px-3 py-2 text-center">
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Mode</div>
+            <div className={`text-xs font-bold ${curMode === "live" ? "text-red-300" : "text-indigo-300"}`}>
+              {curMode === "demo" ? "DEMO" : "⚡ LIVE"}
+            </div>
+          </div>
+          <div className="flex-1 bg-[#111827] border border-[#1e2433] rounded-lg px-3 py-2 text-center">
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Style</div>
+            <div className="text-xs font-bold text-indigo-300">
+              {curStyle === "scalping" ? "⚡ Scalping" : "📈 Swing"}
+            </div>
+          </div>
         </div>
-        {mode === "live" && !running && (
-          <p className="flex items-center gap-1.5 text-[11px] text-red-400/80 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-2">
-            <AlertTriangle size={11} className="flex-shrink-0" /> Live mode uses real Delta Exchange funds
-          </p>
-        )}
-      </div>
+      ) : (
+        /* ── Bot stopped: show full mode + style + pairs ── */
+        <>
+          {/* Mode */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Mode</label>
+            <div className="flex gap-2">
+              {["demo", "live"].map((m) => (
+                <button key={m}
+                  onClick={() => handleSetMode(m)}
+                  className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                    mode === m
+                      ? m === "live"
+                        ? "bg-red-500/15 border border-red-500/40 text-red-300"
+                        : "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
+                      : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-300 hover:border-[#2a3045]"
+                  }`}>
+                  {m === "demo" ? "DEMO" : "⚡ LIVE"}
+                </button>
+              ))}
+            </div>
+            {mode === "live" && (
+              <p className="flex items-center gap-1.5 text-[11px] text-red-400/80 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-2">
+                <AlertTriangle size={11} className="flex-shrink-0" /> Live mode uses real Binance Futures funds
+              </p>
+            )}
+          </div>
 
-      <div className="h-px bg-[#1e2433]" />
+          <div className="h-px bg-[#1e2433]" />
 
-      {/* Style */}
-      <div className="space-y-2">
-        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Trading Style</label>
-        <div className="flex gap-2">
-          {["scalping", "swing"].map((s) => (
-            <button key={s} disabled={running}
-              onClick={() => handleSetStyle(s)}
-              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-50 ${
-                style === s
-                  ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
-                  : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-300 hover:border-[#2a3045]"
-              }`}>
-              {s === "scalping" ? "⚡ Scalping" : "📈 Swing"}
-            </button>
-          ))}
-        </div>
-        <p className="text-[11px] text-gray-600 leading-relaxed">
-          {style === "scalping"
-            ? "2–8 min holds · 15m trend · 5m entry · RSI-2 signals"
-            : "Hours–days · 4h trend · 1h entry · RSI-14 signals"}
-        </p>
-      </div>
+          {/* Style */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Trading Style</label>
+            <div className="flex gap-2">
+              {["scalping", "swing"].map((s) => (
+                <button key={s}
+                  onClick={() => handleSetStyle(s)}
+                  className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                    style === s
+                      ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
+                      : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-300 hover:border-[#2a3045]"
+                  }`}>
+                  {s === "scalping" ? "⚡ Scalping" : "📈 Swing"}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-600 leading-relaxed">
+              {style === "scalping"
+                ? "2–8 min holds · 15m trend · 5m entry · RSI-2 signals"
+                : "Hours–days · 4h trend · 1h entry · RSI-14 signals"}
+            </p>
+          </div>
 
-      <div className="h-px bg-[#1e2433]" />
+          <div className="h-px bg-[#1e2433]" />
 
-      {/* Pairs */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Pairs</label>
-          <span className="text-[10px] text-gray-600">{pairs.length} selected</span>
-        </div>
-        <div className="flex gap-1.5 flex-wrap">
-          {ALL_PAIRS.map((p) => (
-            <button key={p} disabled={running}
-              onClick={() => togglePair(p)}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-bold tracking-wide transition-all disabled:opacity-50 ${
-                pairs.includes(p)
-                  ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
-                  : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-400 hover:border-[#2a3045]"
-              }`}>
-              {p}
-            </button>
-          ))}
-        </div>
-      </div>
+          {/* Pairs */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Pairs</label>
+              <span className="text-[10px] text-gray-600">{pairs.length} selected</span>
+            </div>
+            <div className="flex gap-1.5 flex-wrap">
+              {ALL_PAIRS.map((p) => (
+                <button key={p}
+                  onClick={() => togglePair(p)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold tracking-wide transition-all ${
+                    pairs.includes(p)
+                      ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
+                      : "bg-[#111827] border border-[#1e2433] text-gray-600 hover:text-gray-400 hover:border-[#2a3045]"
+                  }`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="h-px bg-[#1e2433]" />
 
@@ -232,7 +253,7 @@ export default function BotControls({ running, mode: curMode, style: curStyle,
           </div>
         )}
         <p className="text-[11px] text-gray-600">
-          SL: ATR×1.5 · Max loss: 1.5R · Trailing from 1R
+          SL: ATR×1.35 · Max loss: 1R · Trailing from 1R
         </p>
       </div>
 

@@ -26,6 +26,7 @@ interface Trade {
   created_at: string;
   exit_time: string;
   duration_seconds: number;
+  trader_name: string;
 }
 
 interface Props {
@@ -143,6 +144,7 @@ export default function TradeHistory({ mode }: Props) {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-[#1e2433] text-gray-500 text-[10px] uppercase">
+                  <th className="px-4 py-2 text-left">Trader</th>
                   <th className="px-4 py-2 text-left">Pair</th>
                   <th className="px-3 py-2 text-left">Dir</th>
                   <th className="px-3 py-2 text-left">Style</th>
@@ -164,7 +166,7 @@ export default function TradeHistory({ mode }: Props) {
                   <React.Fragment key={group.date}>
                     {/* Date separator */}
                     <tr>
-                      <td colSpan={14} className="px-4 pt-3 pb-1.5">
+                      <td colSpan={15} className="px-4 pt-3 pb-1.5">
                         <div className="flex items-center gap-3">
                           <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest whitespace-nowrap">
                             {group.date}
@@ -184,6 +186,11 @@ export default function TradeHistory({ mode }: Props) {
                       return (
                         <tr key={t.id}
                           className="border-b border-[#1a2030] hover:bg-[#1a2030] transition-colors">
+                          <td className="px-4 py-2.5">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                              {t.trader_name || "Unknown"}
+                            </span>
+                          </td>
                           <td className="px-4 py-2.5 font-bold text-white">{t.pair}</td>
                           <td className="px-3 py-2.5">
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${

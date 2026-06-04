@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useBotSocket } from "@/hooks/useBotSocket";
 import BotControls from "@/components/BotControls";
 import SignalPanel from "@/components/SignalPanel";
@@ -6,7 +6,7 @@ import WalletCard from "@/components/WalletCard";
 import PositionCard from "@/components/PositionCard";
 import PerfStats from "@/components/PerfStats";
 import AppHeader from "@/components/AppHeader";
-import { Clock, TrendingUp, TrendingDown } from "lucide-react";
+import { Clock, TrendingUp, TrendingDown, ChevronUp, ChevronDown } from "lucide-react";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 
 function formatSeconds(s: number) {
@@ -14,13 +14,68 @@ function formatSeconds(s: number) {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+const MIN_HEIGHT = 40;   // collapsed — only header visible
+const DEFAULT_HEIGHT = 220;
+const MAX_HEIGHT = 520;
+
 export default function Index() {
   const { state, startBot, stopBot, forceClose } = useBotSocket();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [drawerHeight, setDrawerHeight] = useState(MIN_HEIGHT);
+  const [isOpen, setIsOpen]             = useState(false);
   const { fmtINR } = useExchangeRate();
 
-  const positions = Object.values(state.positions);
-  const pos = positions[0] ?? null;
+  const positions   = Object.values(state.positions);
+  const pos         = positions[0] ?? null;
+  const isDragging  = useRef(false);
+  const startY      = useRef(0);
+  const startHeight = useRef(0);
+
+  // Auto-expand when trade opens
+  useEffect(() => {
+    if (positions.length > 0 && !isOpen) {
+      setIsOpen(true);
+      setDrawerHeight(DEFAULT_HEIGHT);
+    }
+  }, [positions.length]);
+
+  const toggleDrawer = () => {
+    if (isOpen) {
+      setIsOpen(false);
+      setDrawerHeight(MIN_HEIGHT);
+    } else {
+      setIsOpen(true);
+      setDrawerHeight(DEFAULT_HEIGHT);
+    }
+  };
+
+  // Drag to resize
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    isDragging.current  = true;
+    startY.current      = e.clientY;
+    startHeight.current = drawerHeight;
+    document.body.style.cursor     = "ns-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isDragging.current) return;
+      const delta  = startY.current - ev.clientY;
+      const newH   = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startHeight.current + delta));
+      setDrawerHeight(newH);
+      setIsOpen(newH > MIN_HEIGHT + 10);
+    };
+    const onUp = () => {
+      isDragging.current             = false;
+      document.body.style.cursor     = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [drawerHeight]);
+
+  const currentHeight = isOpen ? drawerHeight : MIN_HEIGHT;
 
   return (
     <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">
@@ -37,15 +92,12 @@ export default function Index() {
       <div className="flex flex-1 overflow-hidden relative">
         {/* Mobile backdrop */}
         {sidebarOpen && (
-          <div
-            className="fixed inset-0 z-20 bg-black/60 md:hidden"
-            onClick={() => setSidebarOpen(false)}
-          />
+          <div className="fixed inset-0 z-20 bg-black/60 md:hidden"
+            onClick={() => setSidebarOpen(false)} />
         )}
 
         {/* Sidebar */}
-        <aside
-          className={`
+        <aside className={`
             fixed md:relative inset-y-0 left-0 z-30 md:z-auto
             w-[300px] md:w-80 flex-shrink-0
             flex flex-col gap-4
@@ -64,20 +116,23 @@ export default function Index() {
             onStart={startBot}
             onStop={stopBot}
             onForceClose={forceClose}
+            walletBalance={state.wallet?.balance}
           />
-          <WalletCard wallet={state.wallet} mode={state.mode} />
+          <WalletCard mode={state.mode} />
           {positions.length > 0
             ? positions.map((p) => (
                 <PositionCard key={p.pair} position={p} lastTrade={state.lastTrade} onForceClose={forceClose} />
               ))
             : <PositionCard position={null} lastTrade={state.lastTrade} onForceClose={forceClose} />
           }
-          <PerfStats mode={state.mode} />
+          <PerfStats mode={state.mode || "demo"} />
         </aside>
 
         {/* Main Panel */}
-        <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#07090f] min-w-0">
-          {/* Signal Monitor header */}
+        <main
+          className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#07090f] min-w-0"
+          style={{ paddingBottom: `${currentHeight + 16}px` }}
+        >
           <div className="flex items-start justify-between gap-3">
             <div>
               <h1 className="text-white font-semibold text-base leading-tight">Live Signal Monitor</h1>
@@ -102,26 +157,62 @@ export default function Index() {
             running={state.running}
             knownPairs={state.pairs}
           />
+        </main>
 
-          {/* Active Trades */}
-          <div className="bg-[#0d1117] border border-[#1e2433] rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e2433]">
-              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Active Trades</span>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                positions.length > 0
-                  ? "bg-green-500/10 border border-green-500/20 text-green-400"
-                  : "text-gray-600"
-              }`}>
-                {positions.length} open
+        {/* ── Bottom Drawer (VS Code style) ── */}
+        <div
+          className="fixed bottom-0 right-0 z-40 flex flex-col md:left-80 left-0"
+          style={{
+            height: `${currentHeight}px`,
+            transition: isDragging.current ? "none" : "height 0.2s ease",
+            background: "linear-gradient(180deg, #0a0f1a 0%, #080c15 100%)",
+            borderTop: "1px solid #2a3a5c",
+            borderRadius: "12px 12px 0 0",
+            boxShadow: "0 -4px 24px rgba(0,0,0,0.4), 0 -1px 0 rgba(99,102,241,0.15)",
+          }}
+        >
+          {/* Resize handle */}
+          <div
+            onMouseDown={onMouseDown}
+            className="w-full flex items-center justify-center cursor-ns-resize group"
+            style={{ height: "6px", flexShrink: 0 }}
+          >
+            <div className="w-10 h-1 rounded-full bg-white/30 group-hover:bg-white/60 transition-colors" />
+          </div>
+
+          {/* Header bar */}
+          <div
+            className="flex items-center justify-between px-4 flex-shrink-0 cursor-pointer select-none"
+            style={{ height: "34px" }}
+            onClick={toggleDrawer}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                Active Trades
               </span>
+              {positions.length > 0 && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 animate-pulse">
+                  {positions.length} open
+                </span>
+              )}
+              {positions.length === 0 && (
+                <span className="text-[10px] text-gray-600">0 open</span>
+              )}
             </div>
+            <div className="text-white/60 hover:text-white transition-colors"
+              style={{ animation: "drawerBounce 1.5s ease-in-out infinite" }}>
+              {isOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </div>
+          </div>
 
-            {positions.length === 0 ? (
-              <div className="px-4 py-8 text-center text-gray-700 text-xs">No active trades</div>
-            ) : (
-              <div className="overflow-x-auto">
+          {/* Content */}
+          {isOpen && (
+            <div className="flex-1 overflow-auto">
+              {positions.length === 0 ? (
+                <div className="px-4 py-6 text-center text-gray-700 text-xs">No active trades</div>
+              ) : (
                 <table className="w-full text-xs min-w-[700px]">
-                  <thead>
+                  <thead className="sticky top-0 bg-[#0d1117]">
                     <tr className="border-b border-[#1a2030] text-[10px] uppercase text-gray-600 tracking-wider">
                       <th className="px-4 py-2 text-left">Pair</th>
                       <th className="px-3 py-2 text-right">P&L</th>
@@ -144,7 +235,6 @@ export default function Index() {
                         <tr key={p.pair} className={`hover:bg-[#111827] transition-colors ${
                           pnlUp ? "border-l-2 border-l-green-500/30" : "border-l-2 border-l-red-500/30"
                         }`}>
-                          {/* Pair + Dir */}
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">
                               <span className={`flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border ${
@@ -158,8 +248,6 @@ export default function Index() {
                               <span className="font-bold text-white text-sm">{p.pair}</span>
                             </div>
                           </td>
-
-                          {/* P&L */}
                           <td className="px-3 py-3 text-right">
                             <div className={`font-bold font-mono text-sm ${pnlUp ? "text-green-400" : "text-red-400"}`}>
                               {pnlUp ? "+" : ""}{fmtINR(p.pnl ?? 0)}
@@ -168,48 +256,22 @@ export default function Index() {
                               {(p.pnl_pct ?? 0) >= 0 ? "+" : ""}{p.pnl_pct?.toFixed(2)}%
                             </div>
                           </td>
-
-                          {/* Entry */}
-                          <td className="px-3 py-3 text-right font-mono text-gray-300 text-sm">
-                            {p.entry?.toFixed(4)}
-                          </td>
-
-                          {/* Current */}
+                          <td className="px-3 py-3 text-right font-mono text-gray-300 text-sm">{p.entry?.toFixed(4)}</td>
                           <td className="px-3 py-3 text-right">
-                            <span className={`font-mono font-bold text-sm ${pnlUp ? "text-green-400" : "text-red-400"}`}>
-                              {p.current?.toFixed(4)}
-                            </span>
+                            <span className={`font-mono font-bold text-sm ${pnlUp ? "text-green-400" : "text-red-400"}`}>{p.current?.toFixed(4)}</span>
                           </td>
-
-                          {/* SL */}
-                          <td className="px-3 py-3 text-right font-mono text-red-400 text-sm">
-                            {p.sl?.toFixed(4)}
-                          </td>
-
-                          {/* TP */}
-                          <td className="px-3 py-3 text-right font-mono text-yellow-400 text-sm">
-                            {p.tp?.toFixed(4)}
-                          </td>
-
-                          {/* Size */}
-                          <td className="px-3 py-3 text-right font-mono text-indigo-300 text-sm font-bold">
-                            {fmtINR(p.size_usd ?? 0, 0)}
-                          </td>
-
-                          {/* R */}
+                          <td className="px-3 py-3 text-right font-mono text-red-400 text-sm">{p.sl?.toFixed(4)}</td>
+                          <td className="px-3 py-3 text-right font-mono text-yellow-400 text-sm">{p.tp?.toFixed(4)}</td>
+                          <td className="px-3 py-3 text-right font-mono text-indigo-300 text-sm font-bold">{fmtINR(p.size_usd ?? 0, 0)}</td>
                           <td className="px-3 py-3 text-right">
                             <span className={`font-mono font-bold text-sm ${r >= 0 ? "text-indigo-400" : "text-red-400"}`}>
                               {r >= 0 ? "+" : ""}{r.toFixed(2)}R
                             </span>
                           </td>
-
-                          {/* Time */}
                           <td className="px-3 py-3 text-right text-gray-600 whitespace-nowrap">
                             <Clock size={10} className="inline mr-1 mb-0.5" />
                             {formatSeconds(p.elapsed_sec || 0)}
                           </td>
-
-                          {/* Badges */}
                           <td className="px-3 py-3">
                             <div className="flex items-center gap-1">
                               {p.trailing_sl && p.breakeven_hit ? (
@@ -227,11 +289,10 @@ export default function Index() {
                     })}
                   </tbody>
                 </table>
-              </div>
-            )}
-          </div>
-
-        </main>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

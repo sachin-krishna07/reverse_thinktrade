@@ -1,19 +1,186 @@
 import asyncio
 import logging
 import time
+import hmac
+import hashlib
+import aiohttp
+from urllib.parse import urlencode
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Any
 
-from config import SCALPING, SWING, POSITION_CHECK_INTERVAL
+from config import SCALPING, SWING, POSITION_CHECK_INTERVAL, BINANCE_API_KEY, BINANCE_SECRET_KEY
 from core.signal_engine import SignalResult
 from core.risk_manager import RiskManager
 import core.supabase_client as db
 
 log = logging.getLogger("trade_engine")
 
-# Delta Exchange futures taker fee (0.05%) + 18% GST = 0.059% per order
-# Entry + Exit = 0.118% of position size total per trade
-TAKER_FEE_RATE = 0.05 / 100 * 1.18   # 0.000590
+# Binance Futures taker fee: 0.04%
+TAKER_FEE_RATE = 0.04 / 100
+
+BINANCE_FUTURES_BASE = "https://fapi.binance.com"
+
+# Minimum quantity precision per symbol (Binance requirement)
+SYMBOL_PRECISION = {
+    "BTCUSDT": 3, "ETHUSDT": 3, "SOLUSDT": 1, "BNBUSDT": 2,
+    "XRPUSDT": 1, "DOGEUSDT": 0, "ADAUSDT": 0, "AVAXUSDT": 2,
+    "LINKUSDT": 2, "DOTUSDT": 1, "LTCUSDT": 3, "ATOMUSDT": 2,
+    "ARBUSDT": 1, "OPUSDT": 1, "INJUSDT": 2, "SUIUSDT": 1,
+    "NEARUSDT": 1, "APTUSDT": 2, "TONUSDT": 2, "WIFUSDT": 0,
+    "PEPEUSDT": 0, "JUPUSDT": 1, "AAVEUSDT": 2, "UNIUSDT": 1,
+    "CRVUSDT": 0, "LDOUSDT": 1, "PENDLEUSDT": 1, "MATICUSDT": 0,
+    "FILUSDT": 1, "ICPUSDT": 2, "HBARUSDT": 0, "STXUSDT": 1,
+    "GRTUSDT": 0, "RUNEUSDT": 1, "PYTHUSDT": 0, "EIGENUSDT": 1,
+    "SHIBUSDT": 0, "FLOKIUSDT": 0, "NOTUSDT": 0, "TURBOUSDT": 0,
+    "ORDIUSDT": 2, "TIAUSDT": 2,
+}
+
+# Binance stop price tick size per symbol (decimal places for price rounding)
+PRICE_PRECISION = {
+    "BTCUSDT": 1, "ETHUSDT": 2, "SOLUSDT": 3, "BNBUSDT": 3,
+    "XRPUSDT": 4, "DOGEUSDT": 5, "ADAUSDT": 4, "AVAXUSDT": 3,
+    "LINKUSDT": 3, "DOTUSDT": 3, "LTCUSDT": 2, "ATOMUSDT": 3,
+    "ARBUSDT": 4, "OPUSDT": 4, "INJUSDT": 3, "SUIUSDT": 4,
+    "NEARUSDT": 4, "APTUSDT": 3, "TONUSDT": 4, "WIFUSDT": 4,
+    "PEPEUSDT": 7, "JUPUSDT": 4, "AAVEUSDT": 2, "UNIUSDT": 4,
+    "CRVUSDT": 4, "LDOUSDT": 4, "PENDLEUSDT": 4, "MATICUSDT": 4,
+    "FILUSDT": 3, "ICPUSDT": 3, "HBARUSDT": 5, "STXUSDT": 4,
+    "GRTUSDT": 5, "RUNEUSDT": 4, "PYTHUSDT": 4, "EIGENUSDT": 4,
+    "SHIBUSDT": 8, "FLOKIUSDT": 7, "NOTUSDT": 6, "TURBOUSDT": 6,
+    "ORDIUSDT": 3, "TIAUSDT": 4,
+}
+
+
+class BinanceFutures:
+    """Thin async wrapper around Binance USDT-M Futures REST API."""
+
+    def __init__(self, api_key: str, secret: str):
+        self.api_key = api_key
+        self.secret  = secret
+
+    def _sign(self, params: dict) -> str:
+        query = urlencode(params)
+        return hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+    async def _request(self, method: str, path: str, params: dict = None, signed: bool = False):
+        params = params or {}
+        if signed:
+            params["timestamp"] = int(time.time() * 1000)
+            params["signature"] = self._sign(params)
+        headers = {"X-MBX-APIKEY": self.api_key}
+        url = BINANCE_FUTURES_BASE + path
+        async with aiohttp.ClientSession() as session:
+            if method == "GET":
+                async with session.get(url, params=params, headers=headers) as r:
+                    return await r.json()
+            elif method == "POST":
+                async with session.post(url, params=params, headers=headers) as r:
+                    return await r.json()
+            elif method == "DELETE":
+                async with session.delete(url, params=params, headers=headers) as r:
+                    return await r.json()
+
+    async def set_leverage(self, symbol: str, leverage: int):
+        return await self._request("POST", "/fapi/v1/leverage", {
+            "symbol": symbol, "leverage": leverage
+        }, signed=True)
+
+    async def place_market_order(self, symbol: str, side: str, quantity: float) -> dict:
+        """side: BUY or SELL"""
+        precision = SYMBOL_PRECISION.get(symbol, 3)
+        qty = round(quantity, precision)
+        return await self._request("POST", "/fapi/v1/order", {
+            "symbol":   symbol,
+            "side":     side,
+            "type":     "MARKET",
+            "quantity": qty,
+        }, signed=True)
+
+    async def place_stop_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
+        """Place STOP_MARKET order for SL"""
+        qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
+        price_prec = PRICE_PRECISION.get(symbol, 4)
+        qty = round(quantity, qty_prec)
+        return await self._request("POST", "/fapi/v1/order", {
+            "symbol":        symbol,
+            "side":          side,
+            "type":          "STOP_MARKET",
+            "quantity":      qty,
+            "stopPrice":     round(stop_price, price_prec),
+            "closePosition": "true",
+        }, signed=True)
+
+    async def place_tp_order(self, symbol: str, side: str, quantity: float, tp_price: float) -> dict:
+        """Place TAKE_PROFIT_MARKET order"""
+        qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
+        price_prec = PRICE_PRECISION.get(symbol, 4)
+        qty = round(quantity, qty_prec)
+        return await self._request("POST", "/fapi/v1/order", {
+            "symbol":        symbol,
+            "side":          side,
+            "type":          "TAKE_PROFIT_MARKET",
+            "quantity":      qty,
+            "stopPrice":     round(tp_price, price_prec),
+            "closePosition": "true",
+        }, signed=True)
+
+    async def cancel_all_orders(self, symbol: str):
+        return await self._request("DELETE", "/fapi/v1/allOpenOrders", {
+            "symbol": symbol
+        }, signed=True)
+
+    async def get_position_size(self, symbol: str) -> float:
+        """Returns current open position quantity (0 if no position)."""
+        try:
+            data = await self._request("GET", "/fapi/v2/positionRisk", {"symbol": symbol}, signed=True)
+            for p in (data if isinstance(data, list) else []):
+                if p.get("symbol") == symbol:
+                    return abs(float(p.get("positionAmt", 0)))
+        except Exception:
+            pass
+        return 0.0
+
+    async def close_position(self, symbol: str, side: str, quantity: float):
+        """Close position with market order"""
+        close_side = "SELL" if side == "BUY" else "BUY"
+        return await self.place_market_order(symbol, close_side, quantity)
+
+    async def get_account_balance(self) -> dict:
+        """Returns futures + spot USDT balance"""
+        # Futures balance
+        futures_balance = 0.0
+        try:
+            data = await self._request("GET", "/fapi/v2/account", signed=True)
+            for asset in data.get("assets", []):
+                if asset["asset"] == "USDT":
+                    futures_balance = float(asset["walletBalance"])
+        except Exception:
+            pass
+
+        # Spot balance
+        spot_balance = 0.0
+        try:
+            import aiohttp
+            params = {"timestamp": int(time.time() * 1000)}
+            import hmac as _hmac, hashlib as _hashlib
+            from urllib.parse import urlencode as _urlencode
+            query = _urlencode(params)
+            params["signature"] = _hmac.new(self.secret.encode(), query.encode(), _hashlib.sha256).hexdigest()
+            headers = {"X-MBX-APIKEY": self.api_key}
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://api.binance.com/api/v3/account", params=params, headers=headers) as r:
+                    spot_data = await r.json()
+            for b in spot_data.get("balances", []):
+                if b["asset"] == "USDT":
+                    spot_balance = float(b["free"])
+        except Exception as e:
+            log.warning(f"Spot balance fetch failed: {e}")
+
+        return {
+            "futures_usdt": futures_balance,
+            "spot_usdt": spot_balance,
+            "total_usdt": futures_balance + spot_balance,
+        }
 
 
 class TradeEngine:
@@ -23,6 +190,14 @@ class TradeEngine:
         self.mode        = mode
         self.leverage    = leverage
         self.trader_name = trader_name
+
+        # Binance Futures client (only used in live mode)
+        self._binance: Optional[BinanceFutures] = None
+        if mode == "live" and BINANCE_API_KEY and BINANCE_SECRET_KEY:
+            self._binance = BinanceFutures(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+            log.info("Binance Futures client initialized ✅")
+        elif mode == "live":
+            log.warning("Live mode but BINANCE_API_KEY/SECRET not set — falling back to demo simulation")
 
         # Safe defaults — overwritten by bot_controller before use
         self._running   = False
@@ -49,9 +224,22 @@ class TradeEngine:
         self._balance         = w.get("balance", 10000)
         self._initial_balance = w.get("initial_balance", 10000)
         self._total_pnl       = w.get("total_pnl", 0)
-        # Recalculate daily_pnl fresh from today's IST trades — ignore stale DB value
         self._daily_pnl       = db.get_today_pnl(self.mode)
         log.info(f"Wallet loaded: ${self._balance:.2f} ({self.mode})")
+
+    async def sync_live_balance(self):
+        """Live mode: sync actual Binance futures balance into _balance for correct position sizing."""
+        if self.mode != "live" or not self._binance:
+            return
+        try:
+            bal = await self._binance.get_account_balance()
+            binance_bal = bal.get("futures_usdt", 0)
+            if binance_bal > 0:
+                self._balance         = binance_bal
+                self._initial_balance = binance_bal
+                log.info(f"Live balance synced from Binance: ${binance_bal:.2f}")
+        except Exception as e:
+            log.warning(f"Binance balance sync failed: {e}")
 
     # ─── Enter Trade ────────────────────────────────────────
 
@@ -145,6 +333,32 @@ class TradeEngine:
             log.error("Failed to insert trade into Supabase — check table exists & RLS disabled")
             return False
 
+        # ── Live: Place actual Binance Futures order ──────────
+        if self.mode == "live" and self._binance:
+            symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+            try:
+                # Set leverage
+                await self._binance.set_leverage(symbol, int(self.leverage))
+
+                # Entry market order
+                side = "BUY" if direction == "long" else "SELL"
+                order = await self._binance.place_market_order(symbol, side, sizing["quantity"])
+                if "code" in order:
+                    log.error(f"Binance order failed: {order}")
+                    await asyncio.to_thread(db.close_trade, trade_id, entry_price, 0, 0, 0, "order_failed", 0, 0, 0)
+                    return False
+                log.info(f"Binance ENTRY order placed: {order.get('orderId')} | {side} {symbol}")
+
+                # SL order
+                sl_side = "SELL" if direction == "long" else "BUY"
+                await self._binance.place_stop_order(symbol, sl_side, sizing["quantity"], sl_price)
+
+                # TP order
+                await self._binance.place_tp_order(symbol, sl_side, sizing["quantity"], tp_price)
+
+            except Exception as e:
+                log.error(f"Binance live order error: {e}", exc_info=True)
+
         pos_data = {
             "trade_id":          trade_id,
             "pair":              pair,
@@ -214,15 +428,17 @@ class TradeEngine:
 
         # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
         # Trailing starts at 1R — below 1R original SL holds.
-        # Steps get tighter as price goes higher — locks more profit on the way up.
-        # Hard exit at 4R (see below).
+        # Gap progressively tightens (0.30R → 0.20R → 0.15R) to lock profits harder at higher R.
         TRAIL_STEPS = [
-            (0.70, 0.00),   # 0.7R → breakeven (SL moves to entry)
-            (1.20, 0.90),   # 1.2R → lock 0.90R  (gap: 0.30R)
-            (1.50, 1.20),   # 1.5R → lock 1.20R  (gap: 0.30R)
+            (1.00, 0.70),   # 1.0R → lock 0.70R  (gap: 0.30R)
+            (1.30, 1.00),   # 1.3R → lock 1.00R  (gap: 0.30R)
+            (1.60, 1.30),   # 1.6R → lock 1.30R  (gap: 0.30R)
             (2.00, 1.70),   # 2.0R → lock 1.70R  (gap: 0.30R)
-            (2.40, 2.00),   # 2.4R → lock 2.00R  (gap: 0.40R)
-            (2.70, 2.50),   # 2.7R → lock 2.50R  (gap: 0.20R)
+            (2.30, 2.10),   # 2.3R → lock 2.10R  (gap: 0.20R)
+            (2.60, 2.40),   # 2.6R → lock 2.40R  (gap: 0.20R)
+            (3.00, 2.80),   # 3.0R → lock 2.80R  (gap: 0.20R)
+            (3.30, 3.15),   # 3.3R → lock 3.15R  (gap: 0.15R)
+            (3.60, 3.45),   # 3.6R → lock 3.45R  (gap: 0.15R)
         ]
 
         r_price = lambda n: (
@@ -254,6 +470,7 @@ class TradeEngine:
             r_current = pnl / risk_amount if risk_amount > 0 else 0
 
             # Process all pending trail steps in order
+            sl_updated = False
             while trail_step < len(TRAIL_STEPS):
                 trigger_r, lock_r = TRAIL_STEPS[trail_step]
                 if r_current >= trigger_r:
@@ -262,12 +479,26 @@ class TradeEngine:
                        (direction == "short" and new_sl < sl_price):
                         sl_price    = new_sl
                         trailing_sl = sl_price
+                        sl_updated  = True
                         log.info(f"{pair} {trigger_r}R hit — SL → +{lock_r}R ({sl_price:.6f})")
                     if lock_r > 0:
                         profit_locked = True
                     trail_step += 1
                 else:
                     break  # steps are ordered, no need to check further
+
+            # ── Live: Update SL on Binance when trailing SL moves ──
+            if sl_updated and self.mode == "live" and self._binance:
+                symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+                quantity = pos_snapshot.get("quantity", 0)
+                sl_side = "SELL" if direction == "long" else "BUY"
+                try:
+                    await self._binance.cancel_all_orders(symbol)
+                    await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
+                    await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
+                    log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
+                except Exception as e:
+                    log.error(f"{pair} Failed to update Binance SL: {e}")
 
             # Update position in DB (every 5 checks to reduce writes)
             breakeven_hit = trail_step > 0   # at least 0.3R step triggered
@@ -310,9 +541,8 @@ class TradeEngine:
             # 4R → hard exit (profit booked)
             if r_current >= 4.0:
                 exit_reason = "2r_target"
-            # 1.5R hard max-loss — exit before original SL to cap slippage
-            # Only applies before any trailing step has been triggered.
-            elif r_current <= -0.9 and trail_step == 0:
+            # Early stop — exit at -1.0R if no trailing step has triggered yet
+            elif r_current <= -1.0 and trail_step == 0:
                 exit_reason = "max_loss"
             elif direction == "long":
                 if current_price <= sl_price:
@@ -337,10 +567,9 @@ class TradeEngine:
                         exit_pct = (entry_price - sl_price) / entry_price
                     exit_pnl = exit_pct * pos_size_usd
                 elif exit_reason == "max_loss":
-                    # Exit at the -1.5R price level — not current price (avoids slippage)
-                    exit_p = r_price(-1.5)
-                    exit_pct = -1.5 * (risk_amount / pos_size_usd)
-                    exit_pnl = -1.5 * risk_amount
+                    exit_p = r_price(-1.0)
+                    exit_pct = -1.0 * (risk_amount / pos_size_usd)
+                    exit_pnl = -1.0 * risk_amount
                 else:
                     # tp, 2r_target — exit at current market price
                     exit_p   = current_price
@@ -370,6 +599,25 @@ class TradeEngine:
         if reason in ("sl", "trailing", "max_loss"):
             self._sl_cooldown[pair] = time.time()
             log.info(f"{pair}: SL cooldown started — no re-entry for 20 min")
+
+        # ── Live: Close position on Binance ──────────────────
+        if self.mode == "live" and self._binance:
+            symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+            try:
+                await self._binance.cancel_all_orders(symbol)
+                # Guard: only place market close if Binance still holds an open position.
+                # If Binance SL/TP already fired, position is gone — placing a market order
+                # here would open a new opposite position unintentionally.
+                live_qty = await self._binance.get_position_size(symbol)
+                if live_qty > 0:
+                    direction  = pos_snapshot.get("direction", "long")
+                    close_side = "SELL" if direction == "long" else "BUY"
+                    order = await self._binance.place_market_order(symbol, close_side, live_qty)
+                    log.info(f"Binance CLOSE order placed: {order.get('orderId')} | {reason}")
+                else:
+                    log.info(f"{pair}: Binance position already closed (SL/TP fired) — skipping market order")
+            except Exception as e:
+                log.error(f"Binance close order error: {e}", exc_info=True)
 
         r_multiple = pnl / risk_amount if risk_amount > 0 else 0
         duration   = int((datetime.now(timezone.utc) - entry_time).total_seconds()) if entry_time else 0

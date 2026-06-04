@@ -69,6 +69,7 @@ class BotController:
         self._engine.set_price_getter(self._md.get_price)
         self._engine.set_running(True)
         self._engine.load_wallet()
+        await self._engine.sync_live_balance()
 
         # Fresh start — clear circuit breaker and per-pair SL cooldowns
         self._risk.reset()

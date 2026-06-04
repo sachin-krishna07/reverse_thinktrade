@@ -133,17 +133,24 @@ export function useBotSocket() {
 
   const handleMessage = (msg: { type: string; data: any }) => {
     switch (msg.type) {
-      case "snapshot":
+      case "snapshot": {
+        // Rebuild positions map from snapshot array
+        const posMap: Record<string, any> = {};
+        (msg.data.positions || []).forEach((p: any) => {
+          posMap[p.pair] = p;
+        });
         setState((s) => ({
           ...s,
-          running: msg.data.running,
-          mode: msg.data.mode,
-          style: msg.data.style,
-          pairs: msg.data.pairs || [],
-          signals: msg.data.signals || {},
-          wallet: msg.data.wallet,
+          running:   msg.data.running,
+          mode:      msg.data.mode,
+          style:     msg.data.style,
+          pairs:     msg.data.pairs || [],
+          signals:   msg.data.signals || {},
+          wallet:    msg.data.wallet,
+          positions: posMap,
         }));
         break;
+      }
 
       case "signal_update":
         setState((s) => ({
@@ -160,6 +167,7 @@ export function useBotSocket() {
         break;
 
       case "trade_opened":
+        new Audio(new URL("../ringtone/enrty.mp3", import.meta.url).href).play().catch(() => {});
         setState((s) => ({
           ...s,
           positions: {
@@ -170,6 +178,7 @@ export function useBotSocket() {
         break;
 
       case "trade_closed":
+        new Audio(new URL("../ringtone/exit-trade.mp3", import.meta.url).href).play().catch(() => {});
         setState((s) => {
           const { [msg.data.pair]: _removed, ...remaining } = s.positions;
           return { ...s, positions: remaining, lastTrade: msg.data };

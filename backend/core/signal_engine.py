@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Dict, Optional, Tuple
 
-from config import SCALPING, SWING
+from config import SCALPING, SWING, MIN_SIGNAL_SCORE
 from core.indicators import (
     ema, adx, rsi, atr, vwap,
     cvd_divergence, dom_imbalance,
@@ -327,7 +327,7 @@ class SignalEngine:
         pullback_ok = ema_pullback(e_closes, direction, period=9, tolerance_pct=0.0075)
         result.ema_pullback = 1 if pullback_ok else 0
 
-        if score >= 4 and quality_ok and pullback_ok:
+        if score >= MIN_SIGNAL_SCORE and quality_ok and pullback_ok:
             result.trade_signal = True
         else:
             result.trade_signal = False

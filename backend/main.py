@@ -230,7 +230,22 @@ async def get_trades(mode: str = "demo", limit: int = 50):
 
 @app.get("/api/wallet")
 async def get_wallet(mode: str = "demo"):
-    return db.get_wallet(mode)
+    wallet = db.get_wallet(mode)
+    if mode == "live":
+        try:
+            from core.trade_engine import BinanceFutures
+            from config import BINANCE_API_KEY, BINANCE_SECRET_KEY
+            if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+                bn = BinanceFutures(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+                bal = await bn.get_account_balance()
+                wallet["balance"] = bal["total_usdt"]
+                wallet["initial_balance"] = bal["total_usdt"]
+                wallet["futures_usdt"] = bal["futures_usdt"]
+                wallet["spot_usdt"] = bal["spot_usdt"]
+                wallet["binance_live"] = True
+        except Exception as e:
+            wallet["binance_error"] = str(e)
+    return wallet
 
 
 @app.get("/api/performance")

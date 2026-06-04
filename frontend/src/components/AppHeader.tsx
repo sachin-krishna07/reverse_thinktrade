@@ -41,12 +41,12 @@ export default function AppHeader({
           {/* Logo + brand */}
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-11 h-11 rounded-xl overflow-hidden flex items-center justify-center"
-                style={{ background: "linear-gradient(135deg, #1a2540 0%, #0f1829 100%)", border: "1px solid #2a3a5c", boxShadow: "0 0 20px rgba(99,102,241,0.3)" }}>
+              <div className="w-16 h-12 rounded-xl overflow-hidden flex items-center justify-center"
+                >
                 <img
                   src="/think_trade_logo.png"
                   alt="ThinkTrade"
-                  className="w-9 h-9 object-contain"
+                  className="w-19 h-19 object-contain"
                 />
               </div>
             </div>

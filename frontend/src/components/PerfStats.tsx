@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 
@@ -9,14 +9,11 @@ const supabase = createClient(
 
 interface Props { mode: string; }
 
-interface Perf {
-  trades_total: number;
-  trades_won: number;
-  win_rate: number;
-  total_pnl: number;
-  avg_r: number;
-  best_trade: number;
-  worst_trade: number;
+interface Trade {
+  pnl: number;
+  net_pnl: number;
+  r_multiple: number;
+  exit_time: string;
 }
 
 function Tile({ label, value, sub, color }: {
@@ -31,52 +28,79 @@ function Tile({ label, value, sub, color }: {
   );
 }
 
+const IST_OFFSET = 5.5 * 60 * 60 * 1000; // UTC+5:30
+
 export default function PerfStats({ mode }: Props) {
-  const [perf, setPerf] = useState<Perf | null>(null);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const { fmtINR } = useExchangeRate();
+
+  const fetchTrades = async () => {
+    // IST midnight in UTC — filter by created_at (same as equity curve & heatmap)
+    const istMidnight = new Date(
+      new Date(Date.now() + IST_OFFSET).toISOString().slice(0, 10) + "T00:00:00+05:30"
+    ).toISOString();
+
+    const { data } = await supabase
+      .from("trades")
+      .select("pnl, net_pnl, r_multiple, exit_time")
+      .eq("mode", mode)
+      .eq("status", "closed")
+      .gte("exit_time", istMidnight);
+
+    setTrades((data as Trade[]) || []);
+  };
 
   useEffect(() => {
-    const fetch = async () => {
-      const today = new Date().toISOString().split("T")[0];
-      const { data } = await supabase
-        .from("performance").select("*").eq("mode", mode)
-        .eq("date", today).limit(1);
-      if (data?.[0]) setPerf(data[0] as Perf);
-    };
-    fetch();
-    const ch = supabase.channel("perf_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "performance" }, fetch)
+    fetchTrades();
+    const ch = supabase.channel("perf_live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "trades", filter: `mode=eq.${mode}` },
+        fetchTrades)
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [mode]);
 
-  const { fmtINR } = useExchangeRate();
-  const winRate = perf?.win_rate ?? 0;
+  const perf = useMemo(() => {
+    // Exclude crash_recovery (0 pnl, 0 r_multiple)
+    const real = trades.filter(t => t.pnl !== 0 || t.r_multiple !== 0);
+    const total  = real.length;
+    const wins   = real.filter(t => t.pnl > 0).length;
+    const losses = total - wins;
+    const totalPnl = real.reduce((s, t) => s + (t.net_pnl || t.pnl || 0), 0);
+    const totalR   = real.reduce((s, t) => s + (t.r_multiple || 0), 0);
+    const avgR     = total > 0 ? Math.round((totalR / total) * 100) / 100 : 0;
+    const winRate  = total > 0 ? Math.round((wins / total) * 100 * 10) / 10 : 0;
+    const pnls     = real.map(t => t.net_pnl || t.pnl || 0);
+    const best     = pnls.length > 0 ? Math.max(...pnls) : 0;
+    const worst    = pnls.length > 0 ? Math.min(...pnls) : 0;
+    return { total, wins, losses, totalPnl, avgR, winRate, best, worst };
+  }, [trades]);
+
   const winColor =
-    winRate >= 60 ? "text-green-400" :
-    winRate >= 50 ? "text-yellow-400" : "text-red-400";
+    perf.winRate >= 60 ? "text-green-400" :
+    perf.winRate >= 50 ? "text-yellow-400" : "text-red-400";
 
   return (
     <div className="bg-[#0f1117] border border-[#1e2433] rounded-xl p-4 space-y-3">
       <h2 className="text-white font-semibold text-sm uppercase tracking-wide">Today's Performance</h2>
       <div className="grid grid-cols-2 gap-2">
         <Tile label="Win Rate"
-          value={perf ? `${winRate.toFixed(1)}%` : "—"}
-          sub={perf ? `${perf.trades_won}W / ${(perf.trades_total - perf.trades_won)}L` : ""}
-          color={perf ? winColor : undefined} />
+          value={perf.total > 0 ? `${perf.winRate.toFixed(1)}%` : "—"}
+          sub={perf.total > 0 ? `${perf.wins}W / ${perf.losses}L` : ""}
+          color={perf.total > 0 ? winColor : undefined} />
         <Tile label="Total Trades"
-          value={perf ? `${perf.trades_total}` : "—"}
+          value={perf.total > 0 ? `${perf.total}` : "—"}
           color="text-white" />
         <Tile label="Total P&L"
-          value={perf ? `${perf.total_pnl >= 0 ? "+" : ""}${fmtINR(perf.total_pnl ?? 0, 0)}` : "—"}
-          color={perf ? (perf.total_pnl >= 0 ? "text-green-400" : "text-red-400") : undefined} />
+          value={perf.total > 0 ? `${perf.totalPnl >= 0 ? "+" : ""}${fmtINR(perf.totalPnl, 0)}` : "—"}
+          color={perf.total > 0 ? (perf.totalPnl >= 0 ? "text-green-400" : "text-red-400") : undefined} />
         <Tile label="Avg R-Multiple"
-          value={perf ? `${perf.avg_r >= 0 ? "+" : ""}${perf.avg_r?.toFixed(2)}R` : "—"}
-          color={perf ? (perf.avg_r >= 0 ? "text-green-400" : "text-red-400") : undefined} />
+          value={perf.total > 0 ? `${perf.avgR >= 0 ? "+" : ""}${perf.avgR.toFixed(2)}R` : "—"}
+          color={perf.total > 0 ? (perf.avgR >= 0 ? "text-green-400" : "text-red-400") : undefined} />
         <Tile label="Best Trade"
-          value={perf?.best_trade ? `+${fmtINR(perf.best_trade ?? 0, 0)}` : "—"}
+          value={perf.best > 0 ? `+${fmtINR(perf.best, 0)}` : "—"}
           color="text-green-400" />
         <Tile label="Worst Trade"
-          value={perf?.worst_trade ? `${fmtINR(perf.worst_trade ?? 0, 0)}` : "—"}
+          value={perf.worst < 0 ? `${fmtINR(perf.worst, 0)}` : "—"}
           color="text-red-400" />
       </div>
     </div>

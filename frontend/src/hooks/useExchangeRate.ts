@@ -1,9 +1,7 @@
-// No USD→INR conversion — backend stores values directly in ₹
-// fmtINR just adds ₹ symbol with Indian number formatting
-
+// Display values in USDT/USD
 export function useExchangeRate() {
-  const fmtINR = (amount: number, decimals = 0) =>
-    "₹" + amount.toLocaleString("en-IN", {
+  const fmtINR = (amount: number, decimals = 2) =>
+    "$" + amount.toLocaleString("en-US", {
       maximumFractionDigits: decimals,
       minimumFractionDigits: decimals,
     });

@@ -214,17 +214,21 @@ export default function Analytics() {
   const [hoveredDay, setHoveredDay] = useState<{ date: string; pnl: number; x: number; y: number } | null>(null);
 
   // ── Trade Heatmap ─────────────────────────────────────────
+  const IST_OFFSET = 5.5 * 60 * 60 * 1000; // UTC+5:30 in ms
+
   const heatmapData = useMemo(() => {
-    // Group trades by date → daily net PnL
+    // Group trades by IST date → daily net PnL
     const dayMap: Record<string, number> = {};
     trades.forEach(t => {
-      const day = t.created_at?.slice(0, 10);
-      if (!day) return;
+      if (!t.created_at) return;
+      // Convert UTC timestamp to IST date
+      const day = new Date(new Date(t.created_at).getTime() + IST_OFFSET)
+        .toISOString().slice(0, 10);
       dayMap[day] = (dayMap[day] || 0) + (t.net_pnl || t.pnl || 0);
     });
 
-    // Build 52-week grid ending today
-    const today = new Date();
+    // Build 52-week grid ending today (IST)
+    const today = new Date(Date.now() + IST_OFFSET);
     today.setHours(0, 0, 0, 0);
     // Start from Sunday 52 weeks ago
     const start = new Date(today);
@@ -238,7 +242,8 @@ export default function Analytics() {
     while (cur <= today) {
       const week: { date: string; pnl: number | null }[] = [];
       for (let d = 0; d < 7; d++) {
-        const iso = cur.toISOString().slice(0, 10);
+        // Use IST date for cell key (add offset then take date part)
+        const iso = new Date(cur.getTime() + IST_OFFSET).toISOString().slice(0, 10);
         week.push({ date: iso, pnl: dayMap[iso] ?? null });
         cur.setDate(cur.getDate() + 1);
       }
@@ -271,14 +276,48 @@ export default function Analytics() {
     }
   }
 
+  // Daily stats breakdown
+  const dailyStats = useMemo(() => {
+    const dayMap: Record<string, { total: number; wins: number; losses: number; pnl: number; rSum: number }> = {};
+    trades.forEach(t => {
+      if (!t.created_at) return;
+      const day = new Date(new Date(t.created_at).getTime() + IST_OFFSET)
+        .toISOString().slice(0, 10);
+      if (!dayMap[day]) dayMap[day] = { total: 0, wins: 0, losses: 0, pnl: 0, rSum: 0 };
+      dayMap[day].total++;
+      dayMap[day].pnl += t.net_pnl || t.pnl || 0;
+      dayMap[day].rSum += t.r_multiple || 0;
+      if ((t.net_pnl || t.pnl || 0) > 0) dayMap[day].wins++;
+      else dayMap[day].losses++;
+    });
+    return Object.entries(dayMap)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, s]) => ({
+        date,
+        ...s,
+        wr: winRate(s.wins, s.total),
+        ar: avgR(s.rSum, s.total),
+      }));
+  }, [trades]);
+
   // Filtered equity for selected period
   const filteredEquity = useMemo(() => {
     const days = periodDays[equityPeriod];
-    const filtered = days
-      ? trades.filter(t => {
-          const diff = (Date.now() - new Date(t.created_at).getTime()) / 86400000;
-          return diff <= days;
-        })
+
+    // For 1D: use IST midnight (same as PerfStats) so both match
+    // For other periods: rolling window from now
+    const getStart = () => {
+      if (equityPeriod === "1D") {
+        return new Date(
+          new Date(Date.now() + IST_OFFSET).toISOString().slice(0, 10) + "T00:00:00+05:30"
+        ).getTime();
+      }
+      return days ? Date.now() - days * 86400000 : 0;
+    };
+    const startMs = getStart();
+
+    const filtered = days || equityPeriod === "1D"
+      ? trades.filter(t => new Date(t.created_at).getTime() >= startMs)
       : trades;
     let running = 0;
     return filtered.map((t, i) => {
@@ -289,6 +328,13 @@ export default function Analytics() {
 
   const filteredPnl = filteredEquity.length > 0 ? filteredEquity[filteredEquity.length - 1].pnl : 0;
   const filteredUp  = filteredPnl >= 0;
+
+  // Zero-crossing gradient: green above 0, red below 0
+  const equityMin = filteredEquity.length > 0 ? Math.min(...filteredEquity.map(d => d.pnl)) : 0;
+  const equityMax = filteredEquity.length > 0 ? Math.max(...filteredEquity.map(d => d.pnl)) : 1;
+  const equityRange = equityMax - equityMin || 1;
+  // Percentage from top where zero line sits (0% = top, 100% = bottom)
+  const zeroPct = equityMax > 0 ? `${Math.min(100, Math.max(0, (equityMax / equityRange) * 100)).toFixed(1)}%` : "0%";
 
   return (
     <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">
@@ -445,8 +491,17 @@ export default function Analytics() {
                     <AreaChart data={filteredEquity} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
                       <defs>
                         <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={filteredUp ? "#22c55e" : "#ef4444"} stopOpacity={0.3} />
-                          <stop offset="95%" stopColor={filteredUp ? "#22c55e" : "#ef4444"} stopOpacity={0} />
+                          {/* Green above zero, red below zero */}
+                          <stop offset="0%"       stopColor="#22c55e" stopOpacity={0.35} />
+                          <stop offset={zeroPct}  stopColor="#22c55e" stopOpacity={0.05} />
+                          <stop offset={zeroPct}  stopColor="#ef4444" stopOpacity={0.05} />
+                          <stop offset="100%"     stopColor="#ef4444" stopOpacity={0.35} />
+                        </linearGradient>
+                        <linearGradient id="strokeGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"      stopColor="#22c55e" stopOpacity={1} />
+                          <stop offset={zeroPct} stopColor="#22c55e" stopOpacity={1} />
+                          <stop offset={zeroPct} stopColor="#ef4444" stopOpacity={1} />
+                          <stop offset="100%"    stopColor="#ef4444" stopOpacity={1} />
                         </linearGradient>
                       </defs>
                       <XAxis dataKey="i" hide />
@@ -454,7 +509,7 @@ export default function Analytics() {
                       <Tooltip content={<ChartTooltip fmt={(v: number) => fmtINR(v)} />} />
                       <Area
                         type="monotone" dataKey="pnl"
-                        stroke={filteredUp ? "#22c55e" : "#ef4444"}
+                        stroke="url(#strokeGrad)"
                         strokeWidth={2}
                         fill="url(#pnlGrad)"
                         dot={false} activeDot={{ r: 4, fill: filteredUp ? "#22c55e" : "#ef4444" }}
@@ -553,6 +608,121 @@ export default function Analytics() {
                 </div>
               )}
             </div>
+
+            {/* ── Daily Breakdown ─────────────────────────── */}
+            {dailyStats.length > 0 && (
+              <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <BarChart2 size={13} className="text-cyan-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-widest">Daily Breakdown</span>
+                  </div>
+                  <span className="text-[10px] text-gray-600">{dailyStats.length} trading days</span>
+                </div>
+
+                {/* Mobile: cards | Desktop: table */}
+                <div className="block sm:hidden divide-y divide-[#111827]">
+                  {dailyStats.map((d) => {
+                    const up = d.pnl >= 0;
+                    const dow = new Date(d.date).toLocaleDateString("en-IN", { weekday: "short" });
+                    const fmtDate = new Date(d.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+                    return (
+                      <div key={d.date} className={`px-4 py-3 ${up ? "hover:bg-green-500/3" : "hover:bg-red-500/3"}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <span className="text-xs font-bold text-white">{fmtDate}</span>
+                            <span className="text-[10px] text-gray-600 ml-1.5">{dow}</span>
+                          </div>
+                          <span className={`text-sm font-black font-mono ${up ? "text-green-400" : "text-red-400"}`}>
+                            {up ? "+" : ""}{fmtINR(d.pnl, 0)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-gray-500">Trades</span>
+                            <span className="text-[11px] font-bold text-white">{d.total}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-bold text-green-400">{d.wins}W</span>
+                            <span className="text-gray-600 text-[10px]">/</span>
+                            <span className="text-[10px] font-bold text-red-400">{d.losses}L</span>
+                          </div>
+                          <div className={`ml-auto text-[11px] font-black px-2 py-0.5 rounded-lg ${d.wr >= 50 ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                            {d.wr}%
+                          </div>
+                          <span className={`text-[10px] font-bold font-mono ${d.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
+                            {d.ar >= 0 ? "+" : ""}{d.ar}R
+                          </span>
+                        </div>
+                        {/* Win rate bar */}
+                        <div className="mt-2 h-1 bg-[#1a2030] rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${d.wr >= 50 ? "bg-green-500" : "bg-red-500"}`}
+                            style={{ width: `${d.wr}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop table */}
+                <div className="hidden sm:block overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-[#1e2433] text-[10px] uppercase text-gray-600 tracking-wider">
+                        <th className="px-5 py-2.5 text-left">Date</th>
+                        <th className="px-3 py-2.5 text-center">Trades</th>
+                        <th className="px-3 py-2.5 text-center">W / L</th>
+                        <th className="px-3 py-2.5 text-center">Win Rate</th>
+                        <th className="px-3 py-2.5 text-right">Avg R</th>
+                        <th className="px-5 py-2.5 text-right">Net P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#111827]">
+                      {dailyStats.map((d) => {
+                        const up = d.pnl >= 0;
+                        const dow = new Date(d.date).toLocaleDateString("en-IN", { weekday: "short" });
+                        const fmtDate = new Date(d.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+                        return (
+                          <tr key={d.date} className={`hover:bg-[#111827] transition-colors ${up ? "" : "bg-red-500/[0.02]"}`}>
+                            <td className="px-5 py-3">
+                              <span className="font-bold text-white">{fmtDate}</span>
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded font-bold ${up ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500"}`}>
+                                {dow}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-center font-mono font-bold text-white">{d.total}</td>
+                            <td className="px-3 py-3 text-center">
+                              <span className="text-green-400 font-bold">{d.wins}</span>
+                              <span className="text-gray-600 mx-1">/</span>
+                              <span className="text-red-400 font-bold">{d.losses}</span>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <div className="flex items-center gap-2 justify-center">
+                                <div className="w-16 h-1.5 bg-[#1a2030] rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${d.wr >= 50 ? "bg-green-500" : "bg-red-500"}`}
+                                    style={{ width: `${d.wr}%` }} />
+                                </div>
+                                <span className={`font-black text-[11px] w-8 ${d.wr >= 50 ? "text-green-400" : "text-red-400"}`}>
+                                  {d.wr}%
+                                </span>
+                              </div>
+                            </td>
+                            <td className={`px-3 py-3 text-right font-mono font-bold ${d.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
+                              {d.ar >= 0 ? "+" : ""}{d.ar}R
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <span className={`font-black font-mono text-sm ${up ? "text-green-400" : "text-red-400"}`}>
+                                {up ? "+" : ""}{fmtINR(d.pnl, 0)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             {/* ── Insights ────────────────────────────────── */}
             {stats.insights.length > 0 && (
@@ -703,6 +873,53 @@ export default function Analytics() {
               </div>
             )}
 
+            
+
+            {/* ── Layer Combo Rankings ─────────────────────── */}
+            {stats.comboStats.length > 0 && (
+              <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Zap size={13} className="text-indigo-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-widest">Layer Combo Rankings</span>
+                  </div>
+                  <span className="text-[10px] text-gray-600">best signal combinations</span>
+                </div>
+                <div className="divide-y divide-[#111827]">
+                  {stats.comboStats.map((c, i) => {
+                    const rankColors = ["text-yellow-400", "text-gray-300", "text-amber-600"];
+                    return (
+                      <div key={c.combo} className="px-5 py-3 flex items-center gap-4 hover:bg-[#111827] transition-colors">
+                        <span className={`text-[11px] font-black w-6 flex-shrink-0 ${i < 3 ? rankColors[i] : "text-gray-700"}`}>
+                          #{i+1}
+                        </span>
+                        <div className="flex flex-wrap gap-1 w-40 flex-shrink-0">
+                          {c.layers.map(l => (
+                            <span key={l} className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/25 text-indigo-300">
+                              {l}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex-1 hidden sm:block">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-gray-600">{c.total} trades</span>
+                            <span className={`text-[10px] font-bold ${c.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{c.wr}%</span>
+                          </div>
+                          <div className="h-1 bg-[#1a2030] rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${c.wr >= 50 ? "bg-green-500" : "bg-red-500"}`}
+                              style={{ width: `${c.wr}%` }} />
+                          </div>
+                        </div>
+                        <div className={`text-xs font-bold font-mono w-14 text-right flex-shrink-0 ${c.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
+                          {c.ar >= 0 ? "+" : ""}{c.ar}R
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* ── Pair Performance Table ───────────────────── */}
             <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
               <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
@@ -792,50 +1009,6 @@ export default function Analytics() {
               </div>
             </div>
 
-            {/* ── Layer Combo Rankings ─────────────────────── */}
-            {stats.comboStats.length > 0 && (
-              <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <Zap size={13} className="text-indigo-400" />
-                    <span className="text-xs font-bold text-white uppercase tracking-widest">Layer Combo Rankings</span>
-                  </div>
-                  <span className="text-[10px] text-gray-600">best signal combinations</span>
-                </div>
-                <div className="divide-y divide-[#111827]">
-                  {stats.comboStats.map((c, i) => {
-                    const rankColors = ["text-yellow-400", "text-gray-300", "text-amber-600"];
-                    return (
-                      <div key={c.combo} className="px-5 py-3 flex items-center gap-4 hover:bg-[#111827] transition-colors">
-                        <span className={`text-[11px] font-black w-6 flex-shrink-0 ${i < 3 ? rankColors[i] : "text-gray-700"}`}>
-                          #{i+1}
-                        </span>
-                        <div className="flex flex-wrap gap-1 w-40 flex-shrink-0">
-                          {c.layers.map(l => (
-                            <span key={l} className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/25 text-indigo-300">
-                              {l}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="flex-1 hidden sm:block">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] text-gray-600">{c.total} trades</span>
-                            <span className={`text-[10px] font-bold ${c.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{c.wr}%</span>
-                          </div>
-                          <div className="h-1 bg-[#1a2030] rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${c.wr >= 50 ? "bg-green-500" : "bg-red-500"}`}
-                              style={{ width: `${c.wr}%` }} />
-                          </div>
-                        </div>
-                        <div className={`text-xs font-bold font-mono w-14 text-right flex-shrink-0 ${c.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
-                          {c.ar >= 0 ? "+" : ""}{c.ar}R
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
           </div>
         )}
