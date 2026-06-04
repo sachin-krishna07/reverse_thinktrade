@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useBotSocket, LogEntry } from "@/hooks/useBotSocket";
 import AppHeader from "@/components/AppHeader";
-import { Search, Trash2, ArrowDown, Database, Zap } from "lucide-react";
+import { Search, Trash2, ArrowDown } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_BOT_API_URL || "http://localhost:8000";
 
@@ -40,7 +40,7 @@ export default function Logs() {
   const [filterName, setFilterName]   = useState<string>("ALL");
   const [search, setSearch]           = useState<string>("");
   const [autoScroll, setAutoScroll]   = useState(true);
-  const [source, setSource]           = useState<"db" | "memory">("db");
+  const [source, setSource]           = useState<"db" | "memory">("memory");
   const [loading, setLoading]         = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -105,25 +105,6 @@ export default function Logs() {
         <div className="flex flex-col gap-2">
           {/* Row 1: Source + Level + Actions */}
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Source toggle */}
-            <div className="flex items-center gap-1 bg-[#0d1117] border border-[#1e2433] rounded-lg p-1">
-              <button
-                onClick={() => setSource("db")}
-                className={`flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-md transition-all ${
-                  source === "db" ? "bg-indigo-500/20 text-indigo-400" : "text-gray-600 hover:text-gray-400"
-                }`}
-              >
-                <Database size={10} /> <span className="hidden xs:inline">Supabase</span><span className="xs:hidden">DB</span>
-              </button>
-              <button
-                onClick={() => setSource("memory")}
-                className={`flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-md transition-all ${
-                  source === "memory" ? "bg-green-500/20 text-green-400" : "text-gray-600 hover:text-gray-400"
-                }`}
-              >
-                <Zap size={10} /> Live
-              </button>
-            </div>
 
             {/* Level filter */}
             <div className="flex items-center gap-1 bg-[#0d1117] border border-[#1e2433] rounded-lg p-1 flex-wrap">

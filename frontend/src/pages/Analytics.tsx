@@ -4,12 +4,12 @@ import AppHeader from "@/components/AppHeader";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, Cell, PieChart, Pie,
+  ResponsiveContainer, Cell, ComposedChart, Line,
 } from "recharts";
 import {
   TrendingUp, TrendingDown, Target, Zap,
   Trophy, AlertTriangle, CheckCircle, Info,
-  BarChart2, Activity,
+  BarChart2, Activity, Clock,
 } from "lucide-react";
 
 const supabase = createClient(
@@ -103,6 +103,7 @@ export default function Analytics() {
 
   // ── Compute all stats ──────────────────────────────────────
   const stats = useMemo(() => {
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
     const total = trades.length;
     const wins  = trades.filter(t => t.pnl > 0).length;
     const totalPnl = trades.reduce((s, t) => s + (t.net_pnl || t.pnl || 0), 0);
@@ -207,7 +208,33 @@ export default function Analytics() {
       if (bestCombo && bestCombo.wr >= 65 && bestCombo.total >= 3) insights.push({ type: "good", text: `Best combo ${bestCombo.combo} — ${bestCombo.wr}% win rate (${bestCombo.total} trades)` });
     }
 
-    return { total, wins, totalPnl, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights };
+    // Hourly analysis (IST)
+    const hourMap: Record<number, { wins: number; losses: number; total: number; profit: number; loss: number; rSum: number }> = {};
+    for (let h = 0; h < 24; h++) hourMap[h] = { wins: 0, losses: 0, total: 0, profit: 0, loss: 0, rSum: 0 };
+    trades.forEach(t => {
+      if (!t.created_at) return;
+      const hour = new Date(new Date(t.created_at).getTime() + IST_OFFSET).getHours();
+      hourMap[hour].total++;
+      hourMap[hour].rSum += t.r_multiple || 0;
+      if ((t.net_pnl || t.pnl || 0) > 0) { hourMap[hour].wins++; hourMap[hour].profit += t.net_pnl || t.pnl || 0; }
+      else { hourMap[hour].losses++; hourMap[hour].loss += Math.abs(t.net_pnl || t.pnl || 0); }
+    });
+    const hourlyData = Array.from({ length: 24 }, (_, h) => {
+      const s = hourMap[h];
+      const label = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h-12}pm`;
+      return {
+        hour: h, label,
+        total: s.total,
+        profit: Math.round(s.profit * 100) / 100,
+        loss: -Math.round(s.loss * 100) / 100,
+        wr: winRate(s.wins, s.total),
+        ar: avgR(s.rSum, s.total),
+        wins: s.wins,
+        losses: s.losses,
+      };
+    });
+
+    return { total, wins, totalPnl, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights, hourlyData };
   }, [trades]);
 
   const equityUp = stats.totalPnl >= 0;
@@ -874,6 +901,94 @@ export default function Analytics() {
             )}
 
             
+
+            {/* ── Hourly Trade Analysis ───────────────────── */}
+            {stats.total >= 3 && (
+              <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Clock size={13} className="text-cyan-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-widest">Hourly Trade Analysis</span>
+                  </div>
+                  <span className="text-[10px] text-gray-600">IST · best & worst trading hours</span>
+                </div>
+
+                {/* Legend */}
+                <div className="px-5 pt-3 flex items-center gap-4">
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-emerald-500/80" /><span className="text-[10px] text-gray-400">Profit</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-red-500/70" /><span className="text-[10px] text-gray-400">Loss</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-1 rounded bg-yellow-400" /><span className="text-[10px] text-gray-400">Win Rate %</span></div>
+                </div>
+
+                {/* Chart */}
+                <div className="px-2 pb-4 pt-2 h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={stats.hourlyData} margin={{ top: 5, right: 20, bottom: 0, left: 0 }} barGap={0}>
+                      <XAxis dataKey="label" tick={{ fill: "#6b7280", fontSize: 9 }} axisLine={false} tickLine={false} interval={1} />
+                      <YAxis yAxisId="pnl" hide />
+                      <YAxis yAxisId="wr" orientation="right" domain={[0, 100]} tick={{ fill: "#6b7280", fontSize: 9 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={32} />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = stats.hourlyData.find(h => h.label === label);
+                          if (!d || d.total === 0) return null;
+                          return (
+                            <div className="bg-[#0d1117] border border-[#2a3045] rounded-xl px-3 py-2.5 text-xs shadow-2xl min-w-[140px]">
+                              <div className="text-gray-400 font-bold mb-2">{label} IST</div>
+                              <div className="space-y-1">
+                                <div className="flex justify-between gap-4"><span className="text-gray-500">Trades</span><span className="text-white font-bold">{d.total}</span></div>
+                                <div className="flex justify-between gap-4"><span className="text-gray-500">W / L</span><span className="font-bold"><span className="text-emerald-400">{d.wins}</span><span className="text-gray-600 mx-1">/</span><span className="text-red-400">{d.losses}</span></span></div>
+                                <div className="flex justify-between gap-4"><span className="text-gray-500">Win Rate</span><span className={`font-bold ${d.wr >= 50 ? "text-emerald-400" : "text-red-400"}`}>{d.wr}%</span></div>
+                                <div className="flex justify-between gap-4"><span className="text-gray-500">Avg R</span><span className={`font-bold font-mono ${d.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>{d.ar >= 0 ? "+" : ""}{d.ar}R</span></div>
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar yAxisId="pnl" dataKey="profit" radius={[3,3,0,0]} maxBarSize={18}>
+                        {stats.hourlyData.map((d, i) => (
+                          <Cell key={i} fill={d.profit > 0 ? "#10b981" : "#1a2030"} fillOpacity={d.profit > 0 ? 0.8 : 0.3} />
+                        ))}
+                      </Bar>
+                      <Bar yAxisId="pnl" dataKey="loss" radius={[3,3,0,0]} maxBarSize={18}>
+                        {stats.hourlyData.map((d, i) => (
+                          <Cell key={i} fill={d.loss < 0 ? "#ef4444" : "#1a2030"} fillOpacity={d.loss < 0 ? 0.7 : 0.3} />
+                        ))}
+                      </Bar>
+                      <Line yAxisId="wr" type="monotone" dataKey="wr" stroke="#facc15" strokeWidth={1.5} dot={(props: any) => {
+                        const { cx, cy, payload } = props;
+                        if (payload.total === 0) return <g key={`dot-${payload.hour}`} />;
+                        return <circle key={`dot-${payload.hour}`} cx={cx} cy={cy} r={3} fill="#facc15" stroke="#0d1117" strokeWidth={1.5} />;
+                      }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Best / Worst hour summary */}
+                {(() => {
+                  const active = stats.hourlyData.filter(h => h.total >= 2);
+                  if (active.length < 2) return null;
+                  const best  = [...active].sort((a, b) => b.wr - a.wr)[0];
+                  const worst = [...active].sort((a, b) => a.wr - b.wr)[0];
+                  const busiest = [...active].sort((a, b) => b.total - a.total)[0];
+                  return (
+                    <div className="grid grid-cols-3 divide-x divide-[#1e2433] border-t border-[#1e2433]">
+                      {[
+                        { label: "Best Hour", hour: best, color: "text-emerald-400", bg: "bg-emerald-500/5" },
+                        { label: "Worst Hour", hour: worst, color: "text-red-400", bg: "bg-red-500/5" },
+                        { label: "Busiest Hour", hour: busiest, color: "text-cyan-400", bg: "bg-cyan-500/5" },
+                      ].map(({ label, hour, color, bg }) => (
+                        <div key={label} className={`px-4 py-3 ${bg}`}>
+                          <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">{label}</div>
+                          <div className={`text-lg font-black ${color}`}>{hour.label}</div>
+                          <div className="text-[10px] text-gray-500 mt-0.5">{hour.total} trades · {hour.wr}% WR</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* ── Layer Combo Rankings ─────────────────────── */}
             {stats.comboStats.length > 0 && (
