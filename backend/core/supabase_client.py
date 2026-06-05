@@ -183,6 +183,46 @@ def get_active_position() -> Optional[Dict]:
     return result.data[0] if result.data else None
 
 
+def get_all_active_positions(mode: str) -> list:
+    """Get all active positions with their trade data — used for recovery on bot restart."""
+    try:
+        pos_result = get_client().table("positions")\
+            .select("*")\
+            .eq("status", "active")\
+            .execute()
+        positions = pos_result.data or []
+        enriched = []
+        for pos in positions:
+            trade_result = get_client().table("trades")\
+                .select("*")\
+                .eq("id", pos["trade_id"])\
+                .eq("mode", mode)\
+                .eq("status", "open")\
+                .execute()
+            if not trade_result.data:
+                continue
+            trade = trade_result.data[0]
+            enriched.append({
+                "position_id":       pos["id"],
+                "trade_id":          trade["id"],
+                "pair":              trade["pair"],
+                "direction":         trade["direction"],
+                "style":             trade.get("style", "scalping"),
+                "entry_price":       trade["entry_price"],
+                "sl_price":          pos.get("sl_price") or trade["sl_price"],
+                "tp_price":          pos.get("tp_price") or trade["tp_price"],
+                "position_size_usd": trade["position_size_usd"],
+                "risk_amount":       trade["risk_amount"],
+                "quantity":          trade["quantity"],
+                "fee":               trade.get("fee", 0),
+            })
+        return enriched
+    except Exception as e:
+        import logging
+        logging.getLogger("supabase_client").error(f"get_all_active_positions failed: {e}")
+        return []
+
+
 # ─── Signals ─────────────────────────────────────────────────
 
 def upsert_signal(pair: str, data: Dict) -> None:

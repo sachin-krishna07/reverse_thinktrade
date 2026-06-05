@@ -121,7 +121,7 @@ class BinanceFutures:
         }, signed=True)
 
     async def place_stop_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """Place STOP_MARKET order for SL"""
+        """Place STOP_MARKET order for SL — uses MARK_PRICE to prevent immediate trigger on spreads/spikes."""
         qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
         price_prec = PRICE_PRECISION.get(symbol, 4)
         qty = round(quantity, qty_prec)
@@ -132,10 +132,11 @@ class BinanceFutures:
             "quantity":      qty,
             "stopPrice":     round(stop_price, price_prec),
             "closePosition": "true",
+            "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def place_tp_order(self, symbol: str, side: str, quantity: float, tp_price: float) -> dict:
-        """Place TAKE_PROFIT_MARKET order"""
+        """Place TAKE_PROFIT_MARKET order — uses MARK_PRICE to prevent premature trigger."""
         qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
         price_prec = PRICE_PRECISION.get(symbol, 4)
         qty = round(quantity, qty_prec)
@@ -146,6 +147,7 @@ class BinanceFutures:
             "quantity":      qty,
             "stopPrice":     round(tp_price, price_prec),
             "closePosition": "true",
+            "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def cancel_all_orders(self, symbol: str):
@@ -393,12 +395,38 @@ class TradeEngine:
                     return False
                 log.info(f"Binance ENTRY order placed: {order.get('orderId')} | {side} {symbol}")
 
-                # SL order
-                sl_side = "SELL" if direction == "long" else "BUY"
-                await self._binance.place_stop_order(symbol, sl_side, sizing["quantity"], sl_price)
+                # Recalculate SL/TP from actual fill price to prevent "would immediately trigger"
+                actual_fill = float(order.get("avgPrice") or order.get("price") or entry_price)
+                if actual_fill > 0 and actual_fill != entry_price:
+                    log.info(f"{pair}: Fill adjusted {entry_price:.6f} → {actual_fill:.6f} — recalculating SL/TP")
+                    if direction == "long":
+                        sl_price = actual_fill - sl_dist
+                        tp_price = actual_fill + tp_dist
+                    else:
+                        sl_price = actual_fill + sl_dist
+                        tp_price = actual_fill - tp_dist
+                    entry_price = actual_fill
 
-                # TP order
-                await self._binance.place_tp_order(symbol, sl_side, sizing["quantity"], tp_price)
+                # SL order — retry up to 3 times
+                sl_side  = "SELL" if direction == "long" else "BUY"
+                sl_placed = False
+                for attempt in range(3):
+                    sl_result = await self._binance.place_stop_order(symbol, sl_side, sizing["quantity"], sl_price)
+                    if "code" not in sl_result:
+                        log.info(f"Binance SL placed: {sl_result.get('orderId')} @ {sl_price:.6f}")
+                        sl_placed = True
+                        break
+                    log.warning(f"{pair}: SL attempt {attempt+1}/3 failed: {sl_result} — retrying...")
+                    await asyncio.sleep(0.3)
+                if not sl_placed:
+                    log.error(f"{pair}: SL FAILED after 3 attempts — software -1R monitor active as fallback")
+
+                # TP order — best effort, not critical
+                tp_result = await self._binance.place_tp_order(symbol, sl_side, sizing["quantity"], tp_price)
+                if "code" in tp_result:
+                    log.warning(f"{pair}: TP order failed: {tp_result}")
+                else:
+                    log.info(f"Binance TP placed: {tp_result.get('orderId')} @ {tp_price:.6f}")
 
             except Exception as e:
                 log.error(f"Binance live order error: {e}", exc_info=True)
@@ -421,7 +449,7 @@ class TradeEngine:
 
         pos_id = await asyncio.to_thread(db.open_position, pos_data)
 
-        pos_snapshot = {**trade_data, **pos_data, "id": pos_id}
+        pos_snapshot = {**trade_data, **pos_data, "id": pos_id, "_entry_time": datetime.now(timezone.utc)}
         monitor_task = asyncio.create_task(
             self._monitor_position(pair, style, cfg, trade_id, pos_id, pos_snapshot)
         )
@@ -717,13 +745,64 @@ class TradeEngine:
             direction    = pos["direction"]
             pos_size_usd = pos["position_size_usd"]
             risk_amount  = pos.get("risk_amount", 1)
+            # Recover entry_time for correct duration calculation
+            entry_time   = pos.get("_entry_time")
             if direction == "long":
                 pnl_pct = (price - entry_price) / entry_price
             else:
                 pnl_pct = (entry_price - price) / entry_price
             pnl = pnl_pct * pos_size_usd
             await self._close_position(pair, entry["trade_id"], entry["position_id"],
-                                       pos, price, pnl, pnl_pct, risk_amount, "manual", None)
+                                       pos, price, pnl, pnl_pct, risk_amount, "manual", entry_time)
+
+    async def recover_open_positions(self):
+        """On bot start, recover any DB-open positions from previous session and restart monitors."""
+        try:
+            open_positions = await asyncio.to_thread(db.get_all_active_positions, self.mode)
+            if not open_positions:
+                return
+            log.info(f"Recovering {len(open_positions)} open position(s) from previous session...")
+            cfg_map = {"scalping": SCALPING, "swing": SWING}
+            for p in open_positions:
+                pair = p["pair"]
+                # Skip if already in _open (shouldn't happen on fresh start)
+                if self.has_open_position(pair):
+                    continue
+                pos_snapshot = {
+                    "trade_id":          p["trade_id"],
+                    "id":                p["position_id"],
+                    "pair":              pair,
+                    "direction":         p["direction"],
+                    "entry_price":       p["entry_price"],
+                    "sl_price":          p["sl_price"],
+                    "tp_price":          p["tp_price"],
+                    "position_size_usd": p["position_size_usd"],
+                    "risk_amount":       p["risk_amount"],
+                    "quantity":          p["quantity"],
+                    "fee":               p.get("fee", 0),
+                    "mode":              self.mode,
+                    "_entry_time":       datetime.now(timezone.utc),  # approximate from now
+                }
+                trade_id    = p["trade_id"]
+                position_id = p["position_id"]
+                style       = p.get("style", "scalping")
+                cfg         = cfg_map.get(style, SCALPING)
+                monitor_task = asyncio.create_task(
+                    self._monitor_position(pair, style, cfg, trade_id, position_id, pos_snapshot)
+                )
+                entry = {
+                    "trade_id":    trade_id,
+                    "position_id": position_id,
+                    "pos":         pos_snapshot,
+                    "monitor_task": monitor_task,
+                }
+                if pair not in self._open:
+                    self._open[pair] = []
+                self._open[pair].append(entry)
+                log.info(f"Recovered: {p['direction'].upper()} {pair} @ {p['entry_price']:.6f} "
+                         f"SL:{p['sl_price']:.6f}")
+        except Exception as e:
+            log.error(f"Position recovery failed: {e}", exc_info=True)
 
     def set_price_getter(self, fn):
         self._get_price = fn
@@ -776,6 +855,11 @@ class TradeEngine:
                 pnl       = pnl_pct * pos_size_usd
                 r_current = pnl / risk_amount if risk_amount > 0 else 0
 
+                # Calculate actual elapsed time from stored entry_time
+                entry_time  = pos.get("_entry_time")
+                elapsed_sec = int((datetime.now(timezone.utc) - entry_time).total_seconds()) \
+                              if entry_time else 0
+
                 result.append({
                     "pair":          pair,
                     "direction":     direction,
@@ -790,7 +874,7 @@ class TradeEngine:
                     "breakeven_hit": False,
                     "profit_locked": False,
                     "trailing_sl":   sl_price,
-                    "elapsed_sec":   0,
+                    "elapsed_sec":   elapsed_sec,
                     "size_usd":      round(pos_size_usd, 2),
                     "risk_usd":      round(risk_amount, 2),
                 })

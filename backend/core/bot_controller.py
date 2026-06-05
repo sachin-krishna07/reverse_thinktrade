@@ -81,6 +81,9 @@ class BotController:
         # Start market data
         await self._md.start(pairs, style)
 
+        # Recover any positions left open from previous session (stop/start without server restart)
+        await self._engine.recover_open_positions()
+
         # Launch main loop tasks
         self._tasks = [
             asyncio.create_task(self._signal_loop()),
@@ -97,10 +100,25 @@ class BotController:
         self._running = False
         self._engine.set_running(False)
 
+        # Cancel signal/wallet/price tasks
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+
+        # Cancel all open position monitor tasks so they don't run as orphans
+        if self._engine:
+            monitor_tasks = [
+                entry["monitor_task"]
+                for entries in self._engine._open.values()
+                for entry in entries
+                if entry.get("monitor_task") and not entry["monitor_task"].done()
+            ]
+            if monitor_tasks:
+                for task in monitor_tasks:
+                    task.cancel()
+                await asyncio.gather(*monitor_tasks, return_exceptions=True)
+                log.info(f"Cancelled {len(monitor_tasks)} position monitor task(s)")
 
         await self._md.stop()
         db.update_bot_config(is_running=False)
