@@ -97,6 +97,15 @@ def close_trade(trade_id: str, exit_price: float, pnl: float, pnl_pct: float,
         "net_pnl":          round(net_pnl, 4),
     }).eq("id", trade_id).execute()
 
+def mark_order_failed(trade_id: str) -> None:
+    """Mark a trade as failed — order never executed on exchange.
+    Uses status='failed' so it is never shown in trade history (which filters status='closed')."""
+    get_client().table("trades").update({
+        "status":      "failed",
+        "exit_reason": "order_failed",
+        "exit_time":   datetime.now(timezone.utc).isoformat(),
+    }).eq("id", trade_id).execute()
+
 def get_trades(mode: str, limit: int = 50) -> list:
     result = get_client().table("trades")\
         .select("*")\

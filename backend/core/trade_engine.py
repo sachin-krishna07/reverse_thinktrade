@@ -242,6 +242,11 @@ class TradeEngine:
         self._sl_cooldown: Dict[str, float] = {}
         self._sl_cooldown_secs: int = 20 * 60  # 20 minutes
 
+        # Per-pair failed-entry cooldown: pair -> timestamp of last order failure
+        # Prevents spam retries when margin is insufficient or order is rejected
+        self._entry_fail_cooldown: Dict[str, float] = {}
+        self._entry_fail_cooldown_secs: int = 5 * 60  # 5 minutes
+
         self._initial_balance: float = 10000
         self._balance:         float = 10000
         self._total_pnl:       float = 0
@@ -303,6 +308,14 @@ class TradeEngine:
             remaining = self._sl_cooldown_secs - elapsed
             if remaining > 0:
                 log.info(f"{pair}: blocked by SL cooldown — {int(remaining/60)}m {int(remaining%60)}s remaining")
+                return False
+
+        # Per-pair failed-entry cooldown check (5 min after any rejected order)
+        if pair in self._entry_fail_cooldown:
+            elapsed = time.time() - self._entry_fail_cooldown[pair]
+            remaining = self._entry_fail_cooldown_secs - elapsed
+            if remaining > 0:
+                log.info(f"{pair}: blocked by failed-entry cooldown — {int(remaining/60)}m {int(remaining%60)}s remaining")
                 return False
 
         wallet = await asyncio.to_thread(db.get_wallet, self.mode)
@@ -389,9 +402,9 @@ class TradeEngine:
                 order = await self._binance.place_market_order(symbol, side, sizing["quantity"])
                 if "code" in order:
                     log.error(f"Binance order failed: {order}")
-                    await asyncio.to_thread(db.close_trade, trade_id, entry_price, 0, 0, 0, "order_failed", 0, 0, 0)
-                    # Cooldown — prevent immediate retry on same pair for 5 min
-                    self._sl_cooldown[pair] = time.time() - self._sl_cooldown_secs + 300
+                    await asyncio.to_thread(db.mark_order_failed, trade_id)
+                    # Dedicated failed-entry cooldown — 5 min, separate from SL cooldown
+                    self._entry_fail_cooldown[pair] = time.time()
                     return False
                 log.info(f"Binance ENTRY order placed: {order.get('orderId')} | {side} {symbol}")
 
