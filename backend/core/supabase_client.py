@@ -68,16 +68,18 @@ def reset_daily_pnl(mode: str) -> None:
 # ─── Trades ─────────────────────────────────────────────────
 
 def open_trade(trade_data: Dict) -> str:
-    try:
-        result = get_client().table("trades").insert(trade_data).execute()
-        return result.data[0]["id"] if result.data else None
-    except Exception as e:
-        if "signal_score" in str(e):
-            # schema cache stale — retry without signal_score
-            data2 = {k: v for k, v in trade_data.items() if k != "signal_score"}
-            result = get_client().table("trades").insert(data2).execute()
+    _OPTIONAL_COLS = {"signal_score"}
+    data = trade_data
+    for attempt in range(len(_OPTIONAL_COLS) + 1):
+        try:
+            result = get_client().table("trades").insert(data).execute()
             return result.data[0]["id"] if result.data else None
-        raise
+        except Exception as e:
+            missing = next((c for c in _OPTIONAL_COLS if c in str(e) and c in data), None)
+            if missing:
+                data = {k: v for k, v in data.items() if k != missing}
+            else:
+                raise
 
 def close_trade(trade_id: str, exit_price: float, pnl: float, pnl_pct: float,
                 r_multiple: float, exit_reason: str, duration_sec: int,

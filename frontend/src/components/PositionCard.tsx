@@ -15,6 +15,9 @@ function formatSeconds(s: number) {
 }
 
 export default function PositionCard({ position, lastTrade, onForceClose }: Props) {
+  const [closing, setClosing] = useState(false);
+  const { fmtINR } = useExchangeRate();
+
   if (!position) {
     return (
       <div className="bg-[#0d1117] border border-[#1e2433] rounded-xl p-4 space-y-3 w-full">
@@ -46,9 +49,6 @@ export default function PositionCard({ position, lastTrade, onForceClose }: Prop
       </div>
     );
   }
-
-  const [closing, setClosing] = useState(false);
-  const { fmtINR } = useExchangeRate();
 
   const handleForceClose = async () => {
     if (!confirm("Close this trade now?")) return;

@@ -73,6 +73,7 @@ export default function Analytics() {
   const [trades, setTrades]     = useState<Trade[]>([]);
   const [loading, setLoading]   = useState(true);
   const [equityPeriod, setEquityPeriod] = useState<string>("All");
+  const [hourlyPeriod, setHourlyPeriod] = useState<string>("All");
   const { fmtINR } = useExchangeRate();
 
   const PERIODS = ["1D", "7D", "1M", "3M", "6M", "9M", "1Y", "All"];
@@ -88,7 +89,8 @@ export default function Analytics() {
       .from("trades")
       .select("pnl, net_pnl, r_multiple, signals_at_entry, pair, direction, exit_reason, created_at, style, signal_score")
       .eq("mode", m).eq("status", "closed")
-      .order("created_at", { ascending: true });
+      .order("created_at", { ascending: true })
+      .limit(10000);
     setTrades((data as Trade[]) || []);
     setLoading(false);
   };
@@ -208,37 +210,62 @@ export default function Analytics() {
       if (bestCombo && bestCombo.wr >= 65 && bestCombo.total >= 3) insights.push({ type: "good", text: `Best combo ${bestCombo.combo} — ${bestCombo.wr}% win rate (${bestCombo.total} trades)` });
     }
 
-    // Hourly analysis (IST)
-    const hourMap: Record<number, { wins: number; losses: number; total: number; profit: number; loss: number; rSum: number }> = {};
-    for (let h = 0; h < 24; h++) hourMap[h] = { wins: 0, losses: 0, total: 0, profit: 0, loss: 0, rSum: 0 };
-    trades.forEach(t => {
-      if (!t.created_at) return;
-      const hour = new Date(new Date(t.created_at).getTime() + IST_OFFSET).getHours();
-      hourMap[hour].total++;
-      hourMap[hour].rSum += t.r_multiple || 0;
-      if ((t.net_pnl || t.pnl || 0) > 0) { hourMap[hour].wins++; hourMap[hour].profit += t.net_pnl || t.pnl || 0; }
-      else { hourMap[hour].losses++; hourMap[hour].loss += Math.abs(t.net_pnl || t.pnl || 0); }
-    });
-    const hourlyData = Array.from({ length: 24 }, (_, h) => {
-      const s = hourMap[h];
-      const label = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h-12}pm`;
-      return {
-        hour: h, label,
-        total: s.total,
-        profit: Math.round(s.profit * 100) / 100,
-        loss: -Math.round(s.loss * 100) / 100,
-        wr: winRate(s.wins, s.total),
-        ar: avgR(s.rSum, s.total),
-        wins: s.wins,
-        losses: s.losses,
-      };
-    });
-
-    return { total, wins, totalPnl, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights, hourlyData };
+    return { total, wins, totalPnl, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights };
   }, [trades]);
 
   const equityUp = stats.totalPnl >= 0;
   const [hoveredDay, setHoveredDay] = useState<{ date: string; pnl: number; x: number; y: number } | null>(null);
+
+  // ── Hourly data (depends on period filter) ────────────────
+  const hourlyData = useMemo(() => {
+    const IST_MS = 5.5 * 60 * 60 * 1000;
+    const nowMs  = Date.now();
+
+    // Filter trades by selected period
+    let filtered = trades;
+    if (hourlyPeriod !== "All") {
+      let startMs: number;
+      if (hourlyPeriod === "1D") {
+        // IST midnight today
+        const istNow = new Date(nowMs + IST_MS);
+        startMs = new Date(`${istNow.toISOString().slice(0, 10)}T00:00:00+05:30`).getTime();
+      } else {
+        const days = periodDays[hourlyPeriod] || 0;
+        startMs = nowMs - days * 86400000;
+      }
+      filtered = trades.filter(t => new Date(t.created_at).getTime() >= startMs);
+    }
+
+    // Bucket into 24 hours (IST)
+    const hourMap: Record<number, { wins: number; losses: number; total: number; profit: number; loss: number; rSum: number }> = {};
+    for (let h = 0; h < 24; h++) hourMap[h] = { wins: 0, losses: 0, total: 0, profit: 0, loss: 0, rSum: 0 };
+
+    filtered.forEach(t => {
+      if (!t.created_at) return;
+      const hour = (new Date(new Date(t.created_at).getTime() + IST_MS)).getHours();
+      const pnl  = t.net_pnl || t.pnl || 0;
+      hourMap[hour].total++;
+      hourMap[hour].rSum += t.r_multiple || 0;
+      if (pnl > 0) { hourMap[hour].wins++;   hourMap[hour].profit += pnl; }
+      else         { hourMap[hour].losses++; hourMap[hour].loss   += Math.abs(pnl); }
+    });
+
+    return Array.from({ length: 24 }, (_, h) => {
+      const s = hourMap[h];
+      const label = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+      return {
+        hour:   h,
+        label,
+        total:  s.total,
+        profit: +(s.profit.toFixed(2)),
+        loss:   +((-s.loss).toFixed(2)),
+        wr:     winRate(s.wins, s.total),
+        ar:     avgR(s.rSum, s.total),
+        wins:   s.wins,
+        losses: s.losses,
+      };
+    });
+  }, [trades, hourlyPeriod]);
 
   // ── Trade Heatmap ─────────────────────────────────────────
   const IST_OFFSET = 5.5 * 60 * 60 * 1000; // UTC+5:30 in ms
@@ -905,68 +932,65 @@ export default function Analytics() {
             {/* ── Hourly Trade Analysis ───────────────────── */}
             {stats.total >= 3 && (
               <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-[#1e2433] flex items-center justify-between">
+                <div className="px-5 py-3.5 border-b border-[#1e2433] flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2.5">
                     <Clock size={13} className="text-cyan-400" />
                     <span className="text-xs font-bold text-white uppercase tracking-widest">Hourly Trade Analysis</span>
                   </div>
-                  <span className="text-[10px] text-gray-600">IST · best & worst trading hours</span>
+                  <div className="flex gap-1 bg-[#080b12] border border-[#1e2433] rounded-lg p-1">
+                    {PERIODS.map(p => (
+                      <button key={p} onClick={() => setHourlyPeriod(p)}
+                        className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+                          hourlyPeriod === p
+                            ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                            : "text-gray-600 hover:text-gray-400"
+                        }`}>
+                        {p}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                {/* Legend */}
-                <div className="px-5 pt-3 flex items-center gap-4">
-                  <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-emerald-500/80" /><span className="text-[10px] text-gray-400">Profit</span></div>
-                  <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-red-500/70" /><span className="text-[10px] text-gray-400">Loss</span></div>
-                  <div className="flex items-center gap-1.5"><div className="w-3 h-1 rounded bg-yellow-400" /><span className="text-[10px] text-gray-400">Win Rate %</span></div>
-                </div>
-
-                {/* Chart */}
-                <div className="px-2 pb-4 pt-2 h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={stats.hourlyData} margin={{ top: 5, right: 20, bottom: 0, left: 0 }} barGap={0}>
-                      <XAxis dataKey="label" tick={{ fill: "#6b7280", fontSize: 9 }} axisLine={false} tickLine={false} interval={1} />
-                      <YAxis yAxisId="pnl" hide />
-                      <YAxis yAxisId="wr" orientation="right" domain={[0, 100]} tick={{ fill: "#6b7280", fontSize: 9 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={32} />
-                      <Tooltip
-                        content={({ active, payload, label }) => {
-                          if (!active || !payload?.length) return null;
-                          const d = stats.hourlyData.find(h => h.label === label);
-                          if (!d || d.total === 0) return null;
+                {/* Trades count bar per hour */}
+                <div className="px-4 pb-3 border-t border-[#1e2433]">
+                  <div className="text-[10px] text-gray-600 uppercase tracking-wider pt-3 pb-2">Trades per hour</div>
+                  {(() => {
+                    const maxTotal = Math.max(...hourlyData.map(h => h.total), 1);
+                    const MAX_H = 288; // px
+                    return (
+                      <div className="flex items-end gap-[3px]" style={{ height: `${MAX_H}px` }}>
+                        {hourlyData.map(h => {
+                          const barH = h.total > 0 ? Math.max(6, Math.round((h.total / maxTotal) * MAX_H)) : 2;
                           return (
-                            <div className="bg-[#0d1117] border border-[#2a3045] rounded-xl px-3 py-2.5 text-xs shadow-2xl min-w-[140px]">
-                              <div className="text-gray-400 font-bold mb-2">{label} IST</div>
-                              <div className="space-y-1">
-                                <div className="flex justify-between gap-4"><span className="text-gray-500">Trades</span><span className="text-white font-bold">{d.total}</span></div>
-                                <div className="flex justify-between gap-4"><span className="text-gray-500">W / L</span><span className="font-bold"><span className="text-emerald-400">{d.wins}</span><span className="text-gray-600 mx-1">/</span><span className="text-red-400">{d.losses}</span></span></div>
-                                <div className="flex justify-between gap-4"><span className="text-gray-500">Win Rate</span><span className={`font-bold ${d.wr >= 50 ? "text-emerald-400" : "text-red-400"}`}>{d.wr}%</span></div>
-                                <div className="flex justify-between gap-4"><span className="text-gray-500">Avg R</span><span className={`font-bold font-mono ${d.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>{d.ar >= 0 ? "+" : ""}{d.ar}R</span></div>
-                              </div>
+                            <div key={h.hour} className="flex-1 flex flex-col justify-end group relative" style={{ height: `${MAX_H}px` }}>
+                              <div
+                                className="w-full rounded-sm"
+                                style={{
+                                  height: `${barH}px`,
+                                  backgroundColor: h.total === 0 ? "#1a2030" : h.wr >= 50 ? "#10b981" : "#ef4444",
+                                  opacity: h.total === 0 ? 0.2 : 0.75,
+                                }}
+                              />
+                              {h.total > 0 && (
+                                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col z-20 pointer-events-none">
+                                  <div className="bg-[#0d1117] border border-[#2a3045] rounded-lg px-2.5 py-2 text-[10px] whitespace-nowrap shadow-xl">
+                                    <div className="text-gray-400 font-bold mb-1">{h.label} IST</div>
+                                    <div className="text-white font-bold">{h.total} trades</div>
+                                    <div className="text-gray-500">{h.wins}W · {h.losses}L · {h.wr}%</div>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           );
-                        }}
-                      />
-                      <Bar yAxisId="pnl" dataKey="profit" radius={[3,3,0,0]} maxBarSize={18}>
-                        {stats.hourlyData.map((d, i) => (
-                          <Cell key={i} fill={d.profit > 0 ? "#10b981" : "#1a2030"} fillOpacity={d.profit > 0 ? 0.8 : 0.3} />
-                        ))}
-                      </Bar>
-                      <Bar yAxisId="pnl" dataKey="loss" radius={[3,3,0,0]} maxBarSize={18}>
-                        {stats.hourlyData.map((d, i) => (
-                          <Cell key={i} fill={d.loss < 0 ? "#ef4444" : "#1a2030"} fillOpacity={d.loss < 0 ? 0.7 : 0.3} />
-                        ))}
-                      </Bar>
-                      <Line yAxisId="wr" type="monotone" dataKey="wr" stroke="#facc15" strokeWidth={1.5} dot={(props: any) => {
-                        const { cx, cy, payload } = props;
-                        if (payload.total === 0) return <g key={`dot-${payload.hour}`} />;
-                        return <circle key={`dot-${payload.hour}`} cx={cx} cy={cy} r={3} fill="#facc15" stroke="#0d1117" strokeWidth={1.5} />;
-                      }} />
-                    </ComposedChart>
-                  </ResponsiveContainer>
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Best / Worst hour summary */}
                 {(() => {
-                  const active = stats.hourlyData.filter(h => h.total >= 2);
+                  const active = hourlyData.filter(h => h.total >= 2);
                   if (active.length < 2) return null;
                   const best  = [...active].sort((a, b) => b.wr - a.wr)[0];
                   const worst = [...active].sort((a, b) => a.wr - b.wr)[0];

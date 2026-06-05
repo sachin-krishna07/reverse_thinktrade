@@ -56,6 +56,9 @@ CREATE TABLE trades (
   pnl               DECIMAL(15,4),
   pnl_pct           DECIMAL(8,4),
   r_multiple        DECIMAL(8,4),
+  fee               DECIMAL(15,4) DEFAULT 0,
+  net_pnl           DECIMAL(15,4),
+  signal_score      DECIMAL(5,2),
   status            TEXT DEFAULT 'open' CHECK (status IN ('open','closed','cancelled')),
   exit_reason       TEXT,
   signals_at_entry  JSONB,
@@ -141,6 +144,16 @@ CREATE TABLE performance (
   UNIQUE(date, mode)
 );
 
+-- ─── Bot Logs ───────────────────────────────────────────────
+CREATE TABLE bot_logs (
+  id      UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ts      TIMESTAMPTZ NOT NULL,
+  level   TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  msg     TEXT NOT NULL
+);
+CREATE INDEX bot_logs_ts_idx ON bot_logs (ts DESC);
+
 -- ─── Enable Realtime ────────────────────────────────────────
 ALTER PUBLICATION supabase_realtime ADD TABLE wallet;
 ALTER PUBLICATION supabase_realtime ADD TABLE positions;
@@ -156,3 +169,4 @@ ALTER TABLE trades DISABLE ROW LEVEL SECURITY;
 ALTER TABLE positions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE signals DISABLE ROW LEVEL SECURITY;
 ALTER TABLE performance DISABLE ROW LEVEL SECURITY;
+ALTER TABLE bot_logs DISABLE ROW LEVEL SECURITY;

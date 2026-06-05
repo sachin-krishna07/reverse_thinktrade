@@ -23,16 +23,16 @@ BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 # Minimum quantity precision per symbol (Binance requirement)
 SYMBOL_PRECISION = {
     "BTCUSDT": 3, "ETHUSDT": 3, "SOLUSDT": 1, "BNBUSDT": 2,
-    "XRPUSDT": 1, "DOGEUSDT": 0, "ADAUSDT": 0, "AVAXUSDT": 2,
-    "LINKUSDT": 2, "DOTUSDT": 1, "LTCUSDT": 3, "ATOMUSDT": 2,
-    "ARBUSDT": 1, "OPUSDT": 1, "INJUSDT": 2, "SUIUSDT": 1,
-    "NEARUSDT": 1, "APTUSDT": 2, "TONUSDT": 2, "WIFUSDT": 0,
-    "PEPEUSDT": 0, "JUPUSDT": 1, "AAVEUSDT": 2, "UNIUSDT": 1,
+    "XRPUSDT": 1, "DOGEUSDT": 0, "ADAUSDT": 0, "AVAXUSDT": 1,
+    "LINKUSDT": 1, "DOTUSDT": 1, "LTCUSDT": 3, "ATOMUSDT": 1,
+    "ARBUSDT": 1, "OPUSDT": 1, "INJUSDT": 1, "SUIUSDT": 1,
+    "NEARUSDT": 1, "APTUSDT": 1, "TONUSDT": 0, "WIFUSDT": 0,
+    "PEPEUSDT": 0, "JUPUSDT": 1, "AAVEUSDT": 1, "UNIUSDT": 1,
     "CRVUSDT": 0, "LDOUSDT": 1, "PENDLEUSDT": 1, "MATICUSDT": 0,
-    "FILUSDT": 1, "ICPUSDT": 2, "HBARUSDT": 0, "STXUSDT": 1,
+    "FILUSDT": 1, "ICPUSDT": 1, "HBARUSDT": 0, "STXUSDT": 1,
     "GRTUSDT": 0, "RUNEUSDT": 1, "PYTHUSDT": 0, "EIGENUSDT": 1,
     "SHIBUSDT": 0, "FLOKIUSDT": 0, "NOTUSDT": 0, "TURBOUSDT": 0,
-    "ORDIUSDT": 2, "TIAUSDT": 2,
+    "ORDIUSDT": 1, "TIAUSDT": 1,
 }
 
 # Binance stop price tick size per symbol (decimal places for price rounding)
@@ -79,6 +79,30 @@ class BinanceFutures:
             elif method == "DELETE":
                 async with session.delete(url, params=params, headers=headers) as r:
                     return await r.json()
+
+    async def fetch_precision(self) -> dict:
+        """Fetch quantity & price precision for all USDT-M futures symbols from Binance."""
+        qty_prec   = {}
+        price_prec = {}
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(BINANCE_FUTURES_BASE + "/fapi/v1/exchangeInfo") as r:
+                    data = await r.json()
+            for sym in data.get("symbols", []):
+                name = sym["symbol"]
+                for f in sym.get("filters", []):
+                    if f["filterType"] == "LOT_SIZE":
+                        step = f["stepSize"]            # e.g. "1", "0.1", "0.001"
+                        decimals = len(step.rstrip("0").split(".")[-1]) if "." in step else 0
+                        qty_prec[name] = decimals
+                    if f["filterType"] == "PRICE_FILTER":
+                        tick = f["tickSize"]
+                        decimals = len(tick.rstrip("0").split(".")[-1]) if "." in tick else 0
+                        price_prec[name] = decimals
+            log.info(f"Binance precision fetched for {len(qty_prec)} symbols ✅")
+        except Exception as e:
+            log.warning(f"Precision fetch failed — using hardcoded fallback: {e}")
+        return {"qty": qty_prec, "price": price_prec}
 
     async def set_leverage(self, symbol: str, leverage: int):
         return await self._request("POST", "/fapi/v1/leverage", {
@@ -199,6 +223,10 @@ class TradeEngine:
         elif mode == "live":
             log.warning("Live mode but BINANCE_API_KEY/SECRET not set — falling back to demo simulation")
 
+        # Precision overrides fetched from Binance at startup (live mode)
+        self._qty_prec:   dict = {}
+        self._price_prec: dict = {}
+
         # Safe defaults — overwritten by bot_controller before use
         self._running   = False
         self._get_price = lambda pair: 0.0
@@ -228,7 +256,7 @@ class TradeEngine:
         log.info(f"Wallet loaded: ${self._balance:.2f} ({self.mode})")
 
     async def sync_live_balance(self):
-        """Live mode: sync actual Binance futures balance into _balance for correct position sizing."""
+        """Live mode: sync actual Binance futures balance + precision into _balance."""
         if self.mode != "live" or not self._binance:
             return
         try:
@@ -240,6 +268,14 @@ class TradeEngine:
                 log.info(f"Live balance synced from Binance: ${binance_bal:.2f}")
         except Exception as e:
             log.warning(f"Binance balance sync failed: {e}")
+
+        # Auto-fetch precision from Binance — overrides hardcoded fallback
+        try:
+            prec = await self._binance.fetch_precision()
+            self._qty_prec   = prec["qty"]
+            self._price_prec = prec["price"]
+        except Exception as e:
+            log.warning(f"Precision fetch failed: {e}")
 
     # ─── Enter Trade ────────────────────────────────────────
 
@@ -336,6 +372,12 @@ class TradeEngine:
         # ── Live: Place actual Binance Futures order ──────────
         if self.mode == "live" and self._binance:
             symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+
+            # Use Binance-fetched precision if available, else hardcoded fallback
+            if self._qty_prec:
+                SYMBOL_PRECISION[symbol]  = self._qty_prec.get(symbol,  SYMBOL_PRECISION.get(symbol, 2))
+                PRICE_PRECISION[symbol]   = self._price_prec.get(symbol, PRICE_PRECISION.get(symbol, 4))
+
             try:
                 # Set leverage
                 await self._binance.set_leverage(symbol, int(self.leverage))
@@ -346,6 +388,8 @@ class TradeEngine:
                 if "code" in order:
                     log.error(f"Binance order failed: {order}")
                     await asyncio.to_thread(db.close_trade, trade_id, entry_price, 0, 0, 0, "order_failed", 0, 0, 0)
+                    # Cooldown — prevent immediate retry on same pair for 5 min
+                    self._sl_cooldown[pair] = time.time() - self._sl_cooldown_secs + 300
                     return False
                 log.info(f"Binance ENTRY order placed: {order.get('orderId')} | {side} {symbol}")
 

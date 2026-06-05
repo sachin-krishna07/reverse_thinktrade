@@ -41,7 +41,8 @@ PAIRS = {
     "LDO":    "LDOUSDT",
     "PENDLE": "PENDLEUSDT",
     # ── Layer 1 / Infra ─────────────────────────────────────
-    "MATIC":  "MATICUSDT",
+    "POL":    "POLUSDT",
+    "MATIC":  "POLUSDT",   # backward compat — MATIC rebranded to POL
     "FIL":    "FILUSDT",
     "ICP":    "ICPUSDT",
     "HBAR":   "HBARUSDT",

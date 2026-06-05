@@ -10,7 +10,7 @@ const ALL_PAIRS = [
   // DeFi Blue-chips
   "AAVE", "UNI", "CRV", "LDO", "PENDLE",
   // L1 / Infra
-  "MATIC", "FIL", "ICP", "HBAR", "STX", "GRT",
+  "POL", "FIL", "ICP", "HBAR", "STX", "GRT",
   // Ecosystem / Mid-caps
   "RUNE", "PYTH", "EIGEN",
   // Meme / High-vol
