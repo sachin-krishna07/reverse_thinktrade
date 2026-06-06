@@ -85,11 +85,17 @@ class BotController:
         # Recover any positions left open from previous session (stop/start without server restart)
         await self._engine.recover_open_positions()
 
+        # Live mode: immediately reconcile with Binance — catch orphan positions not in DB
+        # (e.g. entry executed on Binance but Supabase write failed due to server disconnect)
+        if self._mode == "live":
+            await self._engine._reconcile_binance_positions()
+
         # Launch main loop tasks
         self._tasks = [
             asyncio.create_task(self._signal_loop()),
             asyncio.create_task(self._wallet_broadcast_loop()),
             asyncio.create_task(self._price_ticker_loop()),
+            asyncio.create_task(self._binance_reconcile_loop()),
         ]
 
         await self._broadcast({"type": "bot_status", "data": {"running": True, "mode": mode, "style": style, "pairs": pairs}})
@@ -276,6 +282,23 @@ class BotController:
             "open_pairs":   list(self._engine._open.keys()) if self._engine else [],
             "positions":    positions,
         }
+
+    async def _binance_reconcile_loop(self):
+        """
+        Live mode: every 5 min, detect orphaned Binance positions not tracked by the bot.
+        Startup check is done separately in start() right after recover_open_positions(),
+        so this loop sleeps first before its first periodic check.
+        """
+        while self._running:
+            await asyncio.sleep(5 * 60)   # wait 5 min before first periodic check
+            if not self._running:
+                break
+            try:
+                if self._engine and self._engine.mode == "live":
+                    log.info("Binance reconcile check...")
+                    await self._engine._reconcile_binance_positions()
+            except Exception as e:
+                log.error(f"Binance reconcile loop error: {e}", exc_info=True)
 
     async def force_close_current(self):
         if not self._engine:

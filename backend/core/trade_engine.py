@@ -210,6 +210,36 @@ class BinanceFutures:
             "total_usdt": futures_balance + spot_balance,
         }
 
+    async def get_all_open_positions(self) -> list:
+        """Returns ALL open Binance Futures positions (non-zero positionAmt)."""
+        try:
+            data = await self._request("GET", "/fapi/v2/positionRisk", {}, signed=True)
+            result = []
+            for p in (data if isinstance(data, list) else []):
+                amt = float(p.get("positionAmt", 0))
+                if abs(amt) > 0:
+                    result.append({
+                        "symbol":           p["symbol"],
+                        "positionAmt":      amt,
+                        "entryPrice":       float(p.get("entryPrice", 0)),
+                        "markPrice":        float(p.get("markPrice", 0)),
+                        "unrealizedProfit": float(p.get("unRealizedProfit", 0)),
+                        "leverage":         int(p.get("leverage", 1)),
+                    })
+            return result
+        except Exception as e:
+            log.error(f"get_all_open_positions failed: {e}")
+            return []
+
+    async def get_open_orders(self, symbol: str) -> list:
+        """Returns all open orders for a symbol — used to find existing SL during reconciliation."""
+        try:
+            data = await self._request("GET", "/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            log.error(f"get_open_orders failed for {symbol}: {e}")
+            return []
+
 
 class TradeEngine:
     def __init__(self, risk: RiskManager, on_update: Callable, mode: str = "demo", leverage: float = 5.0, trader_name: str = "Unknown"):
@@ -818,6 +848,230 @@ class TradeEngine:
                          f"SL:{p['sl_price']:.6f}")
         except Exception as e:
             log.error(f"Position recovery failed: {e}", exc_info=True)
+
+    async def _reconcile_binance_positions(self):
+        """
+        Detect positions open on Binance but NOT tracked in _open dict (orphans).
+        Called on bot start (after recover_open_positions) and every 5 min by reconcile loop.
+
+        For each orphan:
+          1. Check Binance open orders for existing SL price
+          2. If no SL found → use 1% of entry price as default SL
+          3. If current price already past SL → close immediately (market order)
+          4. Otherwise → create DB record, place SL+TP on Binance, start software monitor
+        """
+        if self.mode != "live" or not self._binance:
+            return
+
+        try:
+            binance_positions = await self._binance.get_all_open_positions()
+            if not binance_positions:
+                return
+
+            for bp in binance_positions:
+                symbol = bp["symbol"]
+
+                # Only handle USDT-M futures pairs
+                if not symbol.endswith("USDT"):
+                    continue
+
+                # Re-check _open at each iteration (not a stale snapshot built before awaits)
+                # This prevents a race where signal loop enters a pair mid-reconcile
+                pair = symbol[:-4]  # strip "USDT" → "APT", "BTC" etc.
+                if pair in self._open and self._open[pair]:
+                    continue  # already tracked — skip
+                amt         = bp["positionAmt"]
+                entry_price = bp["entryPrice"]
+                mark_price  = bp["markPrice"]
+                direction   = "long" if amt > 0 else "short"
+                quantity    = abs(amt)
+
+                if entry_price <= 0 or mark_price <= 0:
+                    log.warning(f"Orphan {symbol}: entry_price={entry_price} or mark_price={mark_price} is 0 — skipping")
+                    continue
+
+                log.warning(
+                    f"⚠️  ORPHAN POSITION DETECTED: {direction.upper()} {symbol} "
+                    f"qty={quantity} entry={entry_price} mark={mark_price}"
+                )
+
+                # ── Step 1: Find existing SL in Binance open orders ──────────────────
+                sl_price         = None
+                using_default_sl = False
+                try:
+                    open_orders = await self._binance.get_open_orders(symbol)
+                    for order in open_orders:
+                        otype = order.get("type", "")
+                        oside = order.get("side", "")
+                        # SL must be on the CLOSING side
+                        is_sl_side = (
+                            (direction == "long"  and oside == "SELL") or
+                            (direction == "short" and oside == "BUY")
+                        )
+                        if otype == "STOP_MARKET" and is_sl_side:
+                            sl_candidate = float(order.get("stopPrice", 0))
+                            if sl_candidate > 0:
+                                sl_price = sl_candidate
+                                log.info(f"{symbol}: Existing SL found @ {sl_price}")
+                                break
+                except Exception as e:
+                    log.error(f"{symbol}: Could not fetch open orders: {e}")
+
+                # ── Step 2: No SL found → use 1% default ─────────────────────────────
+                DEFAULT_SL_PCT = 0.01
+                if sl_price is None or sl_price <= 0:
+                    using_default_sl = True
+                    if direction == "long":
+                        sl_price = entry_price * (1.0 - DEFAULT_SL_PCT)
+                    else:
+                        sl_price = entry_price * (1.0 + DEFAULT_SL_PCT)
+                    log.info(f"{symbol}: No SL found — 1% default SL @ {sl_price:.6f}")
+
+                # ── Step 3: Check if current price already past SL ───────────────────
+                sl_breached = (
+                    (direction == "long"  and mark_price <= sl_price) or
+                    (direction == "short" and mark_price >= sl_price)
+                )
+
+                if sl_breached:
+                    log.warning(
+                        f"🚨 {symbol}: Orphan already past SL "
+                        f"(mark={mark_price:.6f} {'≤' if direction == 'long' else '≥'} "
+                        f"sl={sl_price:.6f}) — CLOSING IMMEDIATELY"
+                    )
+                    try:
+                        await self._binance.cancel_all_orders(symbol)
+                        close_side  = "SELL" if direction == "long" else "BUY"
+                        close_order = await self._binance.place_market_order(symbol, close_side, quantity)
+                        if "code" in close_order:
+                            log.error(f"{symbol}: Emergency close failed: {close_order}")
+                        else:
+                            log.info(f"{symbol}: Emergency close ✅ orderId={close_order.get('orderId')}")
+                    except Exception as e:
+                        log.error(f"{symbol}: Emergency close error: {e}", exc_info=True)
+                    continue  # don't track — position is being closed
+
+                # ── Step 4: Take ownership — create DB record + monitor ───────────────
+                sl_dist          = abs(entry_price - sl_price)
+                risk_amount      = round(sl_dist * quantity, 4)
+                position_size_usd = round(quantity * entry_price, 4)
+                entry_fee        = round(position_size_usd * TAKER_FEE_RATE, 4)
+
+                # TP: 2:1 R:R from entry price
+                tp_dist = sl_dist * 2.0
+                if direction == "long":
+                    tp_price = entry_price + tp_dist
+                else:
+                    tp_price = entry_price - tp_dist
+
+                # Round prices to symbol precision
+                price_prec = PRICE_PRECISION.get(symbol, 4)
+                sl_price   = round(sl_price,  price_prec)
+                tp_price   = round(tp_price,  price_prec)
+
+                trade_data = {
+                    "mode":              self.mode,
+                    "pair":              pair,
+                    "direction":         direction,
+                    "style":             "scalping",
+                    "entry_price":       entry_price,
+                    "quantity":          quantity,
+                    "position_size_usd": position_size_usd,
+                    "leverage":          bp.get("leverage", int(self.leverage)),
+                    "risk_amount":       risk_amount,
+                    "sl_price":          sl_price,
+                    "tp_price":          tp_price,
+                    "capital_pct":       1.0,
+                    "status":            "open",
+                    "fee":               entry_fee,
+                    "signal_score":      0,
+                    "trader_name":       self.trader_name,
+                    "signals_at_entry":  {
+                        "note":              "orphan_recovered",
+                        "using_default_sl":  using_default_sl,
+                    },
+                }
+
+                try:
+                    trade_id = await asyncio.to_thread(db.open_trade, trade_data)
+                    if not trade_id:
+                        log.error(f"{symbol}: DB trade insert failed for orphan — skipping")
+                        continue
+
+                    sl_pct = round((sl_dist / entry_price) * 100, 4)
+                    tp_pct = round((tp_dist / entry_price) * 100, 4)
+
+                    pos_data = {
+                        "trade_id":          trade_id,
+                        "pair":              pair,
+                        "direction":         direction,
+                        "entry_price":       entry_price,
+                        "current_price":     mark_price,
+                        "quantity":          quantity,
+                        "position_size_usd": position_size_usd,
+                        "sl_price":          sl_price,
+                        "tp_price":          tp_price,
+                        "sl_pct":            sl_pct,
+                        "tp_pct":            tp_pct,
+                        "trailing_sl":       None,
+                        "status":            "active",
+                    }
+
+                    pos_id = await asyncio.to_thread(db.open_position, pos_data)
+                    if not pos_id:
+                        log.error(f"{symbol}: DB position insert failed for orphan — skipping")
+                        continue
+
+                    # Place fresh SL + TP on Binance
+                    sl_side = "SELL" if direction == "long" else "BUY"
+                    try:
+                        await self._binance.cancel_all_orders(symbol)
+                        await asyncio.sleep(0.3)
+                        sl_result = await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
+                        if "code" in sl_result:
+                            log.warning(f"{symbol}: SL placement failed: {sl_result} — software monitor active")
+                        else:
+                            log.info(f"{symbol}: SL placed @ {sl_price} ✅")
+                        tp_result = await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
+                        if "code" in tp_result:
+                            log.warning(f"{symbol}: TP placement failed: {tp_result}")
+                        else:
+                            log.info(f"{symbol}: TP placed @ {tp_price} ✅")
+                    except Exception as e:
+                        log.warning(f"{symbol}: SL/TP placement error (software monitor active): {e}")
+
+                    # Build pos_snapshot — same shape as normal trade entry
+                    pos_snapshot = {
+                        **trade_data,
+                        "id":          pos_id,
+                        "_entry_time": datetime.now(timezone.utc),
+                    }
+
+                    # Start software position monitor (trailing, -1R exit, etc.)
+                    monitor_task = asyncio.create_task(
+                        self._monitor_position(pair, "scalping", SCALPING, trade_id, pos_id, pos_snapshot)
+                    )
+                    entry_record = {
+                        "trade_id":     trade_id,
+                        "position_id":  pos_id,
+                        "pos":          pos_snapshot,
+                        "monitor_task": monitor_task,
+                    }
+                    if pair not in self._open:
+                        self._open[pair] = []
+                    self._open[pair].append(entry_record)
+
+                    log.info(
+                        f"✅ ORPHAN RECOVERED: {direction.upper()} {pair} "
+                        f"entry={entry_price} SL={sl_price} TP={tp_price} "
+                        f"risk=${risk_amount:.2f} | Monitor started"
+                    )
+
+                except Exception as e:
+                    log.error(f"{symbol}: Orphan recovery error: {e}", exc_info=True)
+
+        except Exception as e:
+            log.error(f"_reconcile_binance_positions failed: {e}", exc_info=True)
 
     def set_price_getter(self, fn):
         self._get_price = fn

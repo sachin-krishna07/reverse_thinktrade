@@ -242,7 +242,7 @@ export default function Analytics() {
 
     filtered.forEach(t => {
       if (!t.created_at) return;
-      const hour = (new Date(new Date(t.created_at).getTime() + IST_MS)).getHours();
+      const hour = (new Date(new Date(t.created_at).getTime() + IST_MS)).getUTCHours();
       const pnl  = t.net_pnl || t.pnl || 0;
       hourMap[hour].total++;
       hourMap[hour].rSum += t.r_multiple || 0;

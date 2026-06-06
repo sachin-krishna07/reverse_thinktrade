@@ -212,16 +212,16 @@ export default function TradeHistory({ mode }: Props) {
                             {fmtINR(t.position_size_usd ?? 0)}
                           </td>
                           <td className="px-3 py-2.5 text-right text-orange-300 font-mono">
-                            {fmtINR(t.risk_amount ?? 0, 0)}
+                            {fmtINR(t.risk_amount ?? 0, 4)}
                           </td>
                           <td className={`px-3 py-2.5 text-right font-mono ${win ? "text-green-400/70" : "text-red-400/70"}`}>
-                            {win ? "+" : ""}{fmtINR(pnl, 0)}
+                            {win ? "+" : ""}{fmtINR(pnl, 4)}
                           </td>
                           <td className="px-3 py-2.5 text-right font-mono text-red-400/60">
-                            -{fmtINR(t.fee ?? 0, 0)}
+                            -{fmtINR(t.fee ?? 0, 4)}
                           </td>
                           <td className={`px-3 py-2.5 text-right font-bold font-mono ${netPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                            {netPnl >= 0 ? "+" : ""}{fmtINR(netPnl, 0)}
+                            {netPnl >= 0 ? "+" : ""}{fmtINR(netPnl, 4)}
                           </td>
                           <td className={`px-3 py-2.5 text-right font-mono ${win ? "text-green-400/70" : "text-red-400/70"}`}>
                             {(t.r_multiple ?? 0) >= 0 ? "+" : ""}{(t.r_multiple ?? 0).toFixed(2)}R
