@@ -91,16 +91,16 @@ export default function PerfStats({ mode }: Props) {
           value={perf.total > 0 ? `${perf.total}` : "—"}
           color="text-white" />
         <Tile label="Total P&L"
-          value={perf.total > 0 ? `${perf.totalPnl >= 0 ? "+" : ""}${fmtINR(perf.totalPnl, 0)}` : "—"}
+          value={perf.total > 0 ? `${perf.totalPnl >= 0 ? "+" : ""}${fmtINR(perf.totalPnl, 2)}` : "—"}
           color={perf.total > 0 ? (perf.totalPnl >= 0 ? "text-green-400" : "text-red-400") : undefined} />
         <Tile label="Avg R-Multiple"
           value={perf.total > 0 ? `${perf.avgR >= 0 ? "+" : ""}${perf.avgR.toFixed(2)}R` : "—"}
           color={perf.total > 0 ? (perf.avgR >= 0 ? "text-green-400" : "text-red-400") : undefined} />
         <Tile label="Best Trade"
-          value={perf.best > 0 ? `+${fmtINR(perf.best, 0)}` : "—"}
+          value={perf.best > 0 ? `+${fmtINR(perf.best, 2)}` : "—"}
           color="text-green-400" />
         <Tile label="Worst Trade"
-          value={perf.worst < 0 ? `${fmtINR(perf.worst, 0)}` : "—"}
+          value={perf.worst < 0 ? `${fmtINR(perf.worst, 2)}` : "—"}
           color="text-red-400" />
       </div>
     </div>
