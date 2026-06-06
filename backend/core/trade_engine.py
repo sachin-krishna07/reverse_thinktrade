@@ -279,6 +279,12 @@ class TradeEngine:
         self._entry_fail_cooldown: Dict[str, float] = {}
         self._entry_fail_cooldown_secs: int = 5 * 60  # 5 minutes
 
+        # Per-pair entry lock — prevents double entry during Binance order placement.
+        # SL retry can take 1-3s while signal loop fires every 2s, creating a race window
+        # where _open dict doesn't have the pair yet → second enter() fires on Binance.
+        # Pair added on enter() start, ALWAYS removed in finally (success, fail, or exception).
+        self._entering: set = set()
+
         self._initial_balance: float = 10000
         self._balance:         float = 10000
         self._total_pnl:       float = 0
@@ -321,11 +327,20 @@ class TradeEngine:
     async def enter(self, pair: str, style: str,
                     signal: SignalResult, capital_pct: float,
                     signal_score: int = 4) -> bool:
+        # Double-entry lock: if this pair's entry is already in progress, skip.
+        # Prevents race condition where SL retry (1-3s) overlaps with next signal scan (2s).
+        if pair in self._entering:
+            log.info(f"{pair}: entry already in progress — duplicate blocked ✋")
+            return False
+        self._entering.add(pair)
         try:
             return await self._enter_inner(pair, style, signal, capital_pct, signal_score)
         except Exception as e:
             log.error(f"ENTER FAILED [{pair}]: {e}", exc_info=True)
             return False
+        finally:
+            # ALWAYS unlock — whether success, fail, or exception
+            self._entering.discard(pair)
 
     async def _enter_inner(self, pair: str, style: str,
                            signal: SignalResult, capital_pct: float,

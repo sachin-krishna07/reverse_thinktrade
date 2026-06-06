@@ -71,10 +71,11 @@ class BotController:
         self._engine.load_wallet()
         await self._engine.sync_live_balance()
 
-        # Fresh start — clear circuit breaker and per-pair cooldowns
+        # Fresh start — clear circuit breaker, cooldowns, and entry locks
         self._risk.reset()
         self._engine._sl_cooldown.clear()
         self._engine._entry_fail_cooldown.clear()
+        self._engine._entering.clear()
 
         # Init signal engine
         self._signals = SignalEngine(self._md)
