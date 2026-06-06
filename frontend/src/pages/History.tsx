@@ -1,9 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import AppHeader from "@/components/AppHeader";
 import TradeHistory from "@/components/TradeHistory";
+import { useBotSocket } from "@/hooks/useBotSocket";
 
 export default function History() {
+  const { state } = useBotSocket();
   const [mode, setMode] = useState<"demo" | "live">("demo");
+
+  // Auto-sync with bot mode (live/demo) whenever it changes
+  useEffect(() => {
+    if (state.mode === "live" || state.mode === "demo") {
+      setMode(state.mode as "demo" | "live");
+    }
+  }, [state.mode]);
 
   return (
     <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">

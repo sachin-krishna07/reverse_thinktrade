@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useBotSocket } from "@/hooks/useBotSocket";
 import { createClient } from "@supabase/supabase-js";
 import AppHeader from "@/components/AppHeader";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
@@ -69,12 +70,20 @@ function ChartTooltip({ active, payload, label, fmt }: any) {
 }
 
 export default function Analytics() {
+  const { state } = useBotSocket();
   const [mode, setMode]         = useState<"demo" | "live">("demo");
   const [trades, setTrades]     = useState<Trade[]>([]);
   const [loading, setLoading]   = useState(true);
   const [equityPeriod, setEquityPeriod] = useState<string>("All");
   const [hourlyPeriod, setHourlyPeriod] = useState<string>("All");
   const { fmtINR } = useExchangeRate();
+
+  // Auto-sync with bot mode (live/demo) whenever it changes
+  useEffect(() => {
+    if (state.mode === "live" || state.mode === "demo") {
+      setMode(state.mode as "demo" | "live");
+    }
+  }, [state.mode]);
 
   const PERIODS = ["1D", "7D", "1M", "3M", "6M", "9M", "1Y", "All"];
 
