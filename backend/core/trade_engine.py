@@ -121,35 +121,32 @@ class BinanceFutures:
         }, signed=True)
 
     async def place_stop_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """Place STOP_MARKET order for SL — uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
-        reduceOnly=true instead of closePosition — quantity+closePosition together causes Binance -4120."""
-        qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
+        """Place STOP_MARKET order for SL — closePosition=true closes full position on trigger.
+        Uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
+        quantity param kept for call-site compatibility but NOT sent to Binance —
+        closePosition and quantity/reduceOnly are mutually exclusive on /fapi/v1/order."""
         price_prec = PRICE_PRECISION.get(symbol, 4)
-        qty = round(quantity, qty_prec)
         return await self._request("POST", "/fapi/v1/order", {
-            "symbol":      symbol,
-            "side":        side,
-            "type":        "STOP_MARKET",
-            "quantity":    qty,
-            "stopPrice":   round(stop_price, price_prec),
-            "reduceOnly":  "true",
-            "workingType": "MARK_PRICE",
+            "symbol":        symbol,
+            "side":          side,
+            "type":          "STOP_MARKET",
+            "stopPrice":     round(stop_price, price_prec),
+            "closePosition": "true",
+            "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def place_tp_order(self, symbol: str, side: str, quantity: float, tp_price: float) -> dict:
-        """Place TAKE_PROFIT_MARKET order — uses MARK_PRICE to prevent premature trigger.
-        reduceOnly=true instead of closePosition — quantity+closePosition together causes Binance -4120."""
-        qty_prec   = SYMBOL_PRECISION.get(symbol, 3)
+        """Place TAKE_PROFIT_MARKET order — closePosition=true closes full position on trigger.
+        Uses MARK_PRICE to prevent premature trigger.
+        quantity param kept for call-site compatibility but NOT sent to Binance."""
         price_prec = PRICE_PRECISION.get(symbol, 4)
-        qty = round(quantity, qty_prec)
         return await self._request("POST", "/fapi/v1/order", {
-            "symbol":      symbol,
-            "side":        side,
-            "type":        "TAKE_PROFIT_MARKET",
-            "quantity":    qty,
-            "stopPrice":   round(tp_price, price_prec),
-            "reduceOnly":  "true",
-            "workingType": "MARK_PRICE",
+            "symbol":        symbol,
+            "side":          side,
+            "type":          "TAKE_PROFIT_MARKET",
+            "stopPrice":     round(tp_price, price_prec),
+            "closePosition": "true",
+            "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def cancel_all_orders(self, symbol: str):
