@@ -52,9 +52,9 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
   const dir         = sig.signal_direction || "none";
   const l8Pass      = sig.ema_pullback === 1;
   const canTrade    = sig.trade_signal;
-  const h1RsiState  = (sig as any).h1_rsi_state  || "neutral";
-  const h1RsiVal    = (sig as any).h1_rsi_value  ?? null;
-  const h1Blocked   = (sig as any).h1_rsi_blocked === true;
+  const h1RsiState  = sig.h1_rsi_state  || "neutral";
+  const h1RsiVal    = sig.h1_rsi_value  ?? null;
+  const h1Blocked   = sig.h1_rsi_blocked === true;
 
   const isLong    = dir === "long";
   const isShort   = dir === "short";

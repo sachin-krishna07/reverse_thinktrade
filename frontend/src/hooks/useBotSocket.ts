@@ -31,6 +31,9 @@ export interface SignalData {
   btc_bias: string;
   atr_value: number;
   ema_pullback: number;
+  h1_rsi_value: number;
+  h1_rsi_state: string;   // "overbought" | "oversold" | "neutral"
+  h1_rsi_blocked: boolean;
 }
 
 export interface PositionData {
