@@ -11,54 +11,48 @@ BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 
 # ─── Pairs: display name → Binance symbol ───────────────────
 PAIRS = {
-    "BTC":  "BTCUSDT",
-    "ETH":  "ETHUSDT",
-    "SOL":  "SOLUSDT",
-    "BNB":  "BNBUSDT",
-    "XRP":  "XRPUSDT",
-    "DOGE": "DOGEUSDT",
-    "ADA":  "ADAUSDT",
-    "AVAX": "AVAXUSDT",
-    "LINK": "LINKUSDT",
-    "DOT":  "DOTUSDT",
-    "LTC":  "LTCUSDT",
-    "ATOM": "ATOMUSDT",
-    "ARB":  "ARBUSDT",
-    "OP":   "OPUSDT",
-    "INJ":  "INJUSDT",
-    "SUI":  "SUIUSDT",
-    "NEAR": "NEARUSDT",
-    "APT":  "APTUSDT",
-    "TIA":  "TIAUSDT",
-    "TON":  "TONUSDT",
-    "WIF":    "WIFUSDT",
-    "PEPE":   "PEPEUSDT",
-    "JUP":    "JUPUSDT",
-    # ── DeFi Blue-Chips ─────────────────────────────────────
-    "AAVE":   "AAVEUSDT",
-    "UNI":    "UNIUSDT",
-    "CRV":    "CRVUSDT",
-    "LDO":    "LDOUSDT",
-    "PENDLE": "PENDLEUSDT",
-    # ── Layer 1 / Infra ─────────────────────────────────────
-    "POL":    "POLUSDT",
-    "MATIC":  "POLUSDT",   # backward compat — MATIC rebranded to POL
-    "FIL":    "FILUSDT",
-    "ICP":    "ICPUSDT",
-    "HBAR":   "HBARUSDT",
-    "STX":    "STXUSDT",
-    "GRT":    "GRTUSDT",
-    # ── Ecosystem / Mid-caps ─────────────────────────────────
-    "RUNE":   "RUNEUSDT",
-    "PYTH":   "PYTHUSDT",
-    "EIGEN":  "EIGENUSDT",
-    # ── Meme / High-vol ──────────────────────────────────────
-    "SHIB":   "SHIBUSDT",
-    "FLOKI":  "FLOKIUSDT",
-    "NOT":    "NOTUSDT",
-    "TURBO":  "TURBOUSDT",
-    # ── BTC Ordinals / Meta ───────────────────────────────────
-    "ORDI":   "ORDIUSDT",
+    # ⭐ TIER 1
+    "JUP":   "JUPUSDT",
+    "NEAR":  "NEARUSDT",
+    "SUI":   "SUIUSDT",
+    "STX":   "STXUSDT",
+    "OP":    "OPUSDT",
+    "DOGE":  "DOGEUSDT",
+    "WIF":   "WIFUSDT",
+    "SOL":   "SOLUSDT",
+    "NOT":   "NOTUSDT",
+    "APT":   "APTUSDT",
+
+    # ✅ TIER 2
+    "TON":   "TONUSDT",
+    "ADA":   "ADAUSDT",
+    "AVAX":  "AVAXUSDT",
+    "ARB":   "ARBUSDT",
+    "TIA":   "TIAUSDT",
+    "ICP":   "ICPUSDT",
+    "BTC":   "BTCUSDT",
+    "ETH":   "ETHUSDT",
+    "LINK":  "LINKUSDT",
+    "HBAR":  "HBARUSDT",
+
+    # 👀 TIER 3
+    "DOT":   "DOTUSDT",
+    "ATOM":  "ATOMUSDT",
+    "EIGEN": "EIGENUSDT",
+    "UNI":   "UNIUSDT",
+    "RUNE":  "RUNEUSDT",
+    "SEI":   "SEIUSDT",
+    "PEPE":  "PEPEUSDT",
+
+    # 🔬 TIER 4
+    "TAO":   "TAOUSDT",
+    "ONDO":  "ONDOUSDT",
+    "ENA":   "ENAUSDT",
+    "FET":   "FETUSDT",
+    "WLD":   "WLDUSDT",
+    "BONK":  "BONKUSDT",
+    "BCH":   "BCHUSDT",
+    "POL":   "POLUSDT",
 }
 
 BINANCE_WS_BASE  = "wss://stream.binance.com:9443/stream"

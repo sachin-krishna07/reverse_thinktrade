@@ -26,6 +26,26 @@ def get_client() -> Client:
         _client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _client
 
+def _db_call(fn, *args, retries: int = 3, **kwargs):
+    """Execute a DB call with auto-reconnect on disconnect errors.
+    Retries up to `retries` times, recreating the client on ServerDisconnected.
+    """
+    global _client
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            if any(x in err_str for x in ("server disconnected", "connection", "timeout", "reset")):
+                log.warning(f"Supabase connection error (attempt {attempt+1}/{retries}): {e} — reconnecting...")
+                _client = None  # force new client on next get_client() call
+                import time; time.sleep(0.5 * (attempt + 1))
+            else:
+                raise  # non-connection error — don't retry
+    raise last_err
+
 
 # ─── Bot Config ─────────────────────────────────────────────
 
@@ -72,7 +92,7 @@ def open_trade(trade_data: Dict) -> str:
     data = trade_data
     for attempt in range(len(_OPTIONAL_COLS) + 1):
         try:
-            result = get_client().table("trades").insert(data).execute()
+            result = _db_call(lambda d: get_client().table("trades").insert(d).execute(), data)
             return result.data[0]["id"] if result.data else None
         except Exception as e:
             missing = next((c for c in _OPTIONAL_COLS if c in str(e) and c in data), None)

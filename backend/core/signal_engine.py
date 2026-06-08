@@ -53,6 +53,11 @@ class SignalResult:
         # L8 — EMA Pullback (mandatory gate)
         self.ema_pullback:    int   = 0   # 1 = pullback confirmed, 0 = not yet
 
+        # 1H RSI Extreme Gate
+        self.h1_rsi_value:    float = 50.0   # 1H RSI value
+        self.h1_rsi_state:    str   = "neutral"  # "overbought" | "oversold" | "neutral"
+        self.h1_rsi_blocked:  bool  = False  # True = trade blocked by 1H RSI
+
         # Quality gate results (internal — not sent to Supabase)
         self.btc_bias:         str  = "n/a"  # long | short | n/a
 
@@ -83,6 +88,9 @@ class SignalResult:
             "atr_value":        self.atr_value,
             "price":            self.current_price,
             "ema_pullback":     self.ema_pullback,
+            "h1_rsi_value":     self.h1_rsi_value,
+            "h1_rsi_state":     self.h1_rsi_state,
+            "h1_rsi_blocked":   self.h1_rsi_blocked,
         }
 
 
@@ -198,9 +206,11 @@ class SignalEngine:
         quality_ok      = True
         result.btc_bias = "n/a"
 
-        # ── 1H Trend Bias Gate ───────────────────────────────────
-        # Before any scalp entry, 1H trend must agree with signal direction.
-        # Prevents shorting in a bullish 1H market and vice versa.
+        # ── 1H Trend Bias Gate + RSI Extreme Gate ───────────────
+        # 1) 1H trend must agree with signal direction
+        # 2) 1H RSI overbought (>75) → LONG blocked | oversold (<25) → SHORT blocked
+        H1_RSI_OB = 75   # overbought threshold
+        H1_RSI_OS = 25   # oversold threshold
         try:
             h1_candles = self.md.get_candles(pair, "1h")
             if len(h1_candles) >= 30:
@@ -211,6 +221,31 @@ class SignalEngine:
                 h1_ema21  = ema(h1_closes, 21)
                 h1_adx, h1_pdi, h1_mdi = adx(h1_highs, h1_lows, h1_closes, 14)
 
+                # ── 1H RSI check ─────────────────────────────
+                h1_rsi_val = rsi(h1_closes, 14)
+                result.h1_rsi_value = round(h1_rsi_val, 1)
+
+                if h1_rsi_val >= H1_RSI_OB:
+                    result.h1_rsi_state = "overbought"
+                elif h1_rsi_val <= H1_RSI_OS:
+                    result.h1_rsi_state = "oversold"
+                else:
+                    result.h1_rsi_state = "neutral"
+
+                # Block: overbought → no LONG | oversold → no SHORT
+                rsi_blocked = (
+                    (result.h1_rsi_state == "overbought" and direction == "long") or
+                    (result.h1_rsi_state == "oversold"   and direction == "short")
+                )
+                if rsi_blocked:
+                    result.h1_rsi_blocked   = True
+                    result.total_score      = score
+                    result.signal_direction = direction
+                    result.trade_signal     = False
+                    log.debug(f"{pair}: blocked by 1H RSI={h1_rsi_val:.1f} ({result.h1_rsi_state}) signal={direction}")
+                    return result
+
+                # ── 1H Trend Bias check ───────────────────────
                 if h1_adx >= 20:
                     if h1_ema9 > h1_ema21 and h1_pdi > h1_mdi:
                         h1_bias = "long"
@@ -219,7 +254,6 @@ class SignalEngine:
                     else:
                         h1_bias = "neutral"
 
-                    # Block trade if 1H trend contradicts signal direction
                     if h1_bias != "neutral" and h1_bias != direction:
                         log.debug(f"{pair}: blocked by 1H bias={h1_bias} (signal={direction})")
                         result.total_score      = score

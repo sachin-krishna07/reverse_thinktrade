@@ -22,32 +22,38 @@ BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 
 # Minimum quantity precision per symbol (Binance requirement)
 SYMBOL_PRECISION = {
-    "BTCUSDT": 3, "ETHUSDT": 3, "SOLUSDT": 1, "BNBUSDT": 2,
-    "XRPUSDT": 1, "DOGEUSDT": 0, "ADAUSDT": 0, "AVAXUSDT": 1,
-    "LINKUSDT": 1, "DOTUSDT": 1, "LTCUSDT": 3, "ATOMUSDT": 1,
-    "ARBUSDT": 1, "OPUSDT": 1, "INJUSDT": 1, "SUIUSDT": 1,
-    "NEARUSDT": 1, "APTUSDT": 1, "TONUSDT": 0, "WIFUSDT": 0,
-    "PEPEUSDT": 0, "JUPUSDT": 1, "AAVEUSDT": 1, "UNIUSDT": 1,
-    "CRVUSDT": 0, "LDOUSDT": 1, "PENDLEUSDT": 1, "MATICUSDT": 0,
-    "FILUSDT": 1, "ICPUSDT": 1, "HBARUSDT": 0, "STXUSDT": 1,
-    "GRTUSDT": 0, "RUNEUSDT": 1, "PYTHUSDT": 0, "EIGENUSDT": 1,
-    "SHIBUSDT": 0, "FLOKIUSDT": 0, "NOTUSDT": 0, "TURBOUSDT": 0,
-    "ORDIUSDT": 1, "TIAUSDT": 1,
+    # TIER 1
+    "JUPUSDT": 1, "NEARUSDT": 1, "SUIUSDT": 1, "STXUSDT": 1,
+    "OPUSDT": 1, "DOGEUSDT": 0, "WIFUSDT": 0, "SOLUSDT": 1,
+    "NOTUSDT": 0, "APTUSDT": 1,
+    # TIER 2
+    "TONUSDT": 0, "ADAUSDT": 0, "AVAXUSDT": 1, "ARBUSDT": 1,
+    "TIAUSDT": 1, "ICPUSDT": 1, "BTCUSDT": 3, "ETHUSDT": 3,
+    "LINKUSDT": 1, "HBARUSDT": 0,
+    # TIER 3
+    "DOTUSDT": 1, "ATOMUSDT": 1, "EIGENUSDT": 1, "UNIUSDT": 1,
+    "RUNEUSDT": 1, "SEIUSDT": 0, "PEPEUSDT": 0,
+    # TIER 4
+    "TAOUSDT": 2, "ONDOUSDT": 1, "ENAUSDT": 0, "FETUSDT": 1,
+    "WLDUSDT": 1, "BONKUSDT": 0, "BCHUSDT": 3, "POLUSDT": 0,
 }
 
 # Binance stop price tick size per symbol (decimal places for price rounding)
 PRICE_PRECISION = {
-    "BTCUSDT": 1, "ETHUSDT": 2, "SOLUSDT": 3, "BNBUSDT": 3,
-    "XRPUSDT": 4, "DOGEUSDT": 5, "ADAUSDT": 4, "AVAXUSDT": 3,
-    "LINKUSDT": 3, "DOTUSDT": 3, "LTCUSDT": 2, "ATOMUSDT": 3,
-    "ARBUSDT": 4, "OPUSDT": 4, "INJUSDT": 3, "SUIUSDT": 4,
-    "NEARUSDT": 4, "APTUSDT": 3, "TONUSDT": 4, "WIFUSDT": 4,
-    "PEPEUSDT": 7, "JUPUSDT": 4, "AAVEUSDT": 2, "UNIUSDT": 4,
-    "CRVUSDT": 4, "LDOUSDT": 4, "PENDLEUSDT": 4, "MATICUSDT": 4,
-    "FILUSDT": 3, "ICPUSDT": 3, "HBARUSDT": 5, "STXUSDT": 4,
-    "GRTUSDT": 5, "RUNEUSDT": 4, "PYTHUSDT": 4, "EIGENUSDT": 4,
-    "SHIBUSDT": 8, "FLOKIUSDT": 7, "NOTUSDT": 6, "TURBOUSDT": 6,
-    "ORDIUSDT": 3, "TIAUSDT": 4,
+    # TIER 1
+    "JUPUSDT": 4, "NEARUSDT": 4, "SUIUSDT": 4, "STXUSDT": 4,
+    "OPUSDT": 4, "DOGEUSDT": 5, "WIFUSDT": 4, "SOLUSDT": 3,
+    "NOTUSDT": 6, "APTUSDT": 3,
+    # TIER 2
+    "TONUSDT": 4, "ADAUSDT": 4, "AVAXUSDT": 3, "ARBUSDT": 4,
+    "TIAUSDT": 4, "ICPUSDT": 3, "BTCUSDT": 1, "ETHUSDT": 2,
+    "LINKUSDT": 3, "HBARUSDT": 5,
+    # TIER 3
+    "DOTUSDT": 3, "ATOMUSDT": 3, "EIGENUSDT": 4, "UNIUSDT": 4,
+    "RUNEUSDT": 4, "SEIUSDT": 4, "PEPEUSDT": 7,
+    # TIER 4
+    "TAOUSDT": 2, "ONDOUSDT": 4, "ENAUSDT": 4, "FETUSDT": 4,
+    "WLDUSDT": 4, "BONKUSDT": 7, "BCHUSDT": 2, "POLUSDT": 4,
 }
 
 
@@ -556,19 +562,19 @@ class TradeEngine:
         trailing_sl    = sl_price
 
         # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
-        # Trailing starts at 1R — below 1R original SL holds.
-        # Gap progressively tightens (0.30R → 0.20R → 0.15R) to lock profits harder at higher R.
+        # 1.0R → breakeven (SL moves to entry)
+        # 1.5R → trailing starts, below 1.5R breakeven SL holds
+        # Gap 0.5R early, tightens to 0.4R at higher R
         TRAIL_STEPS = [
-            (1.00, 0.70),   # 1.0R → lock 0.70R  (gap: 0.30R)
-            (1.30, 1.00),   # 1.3R → lock 1.00R  (gap: 0.30R)
-            (1.60, 1.30),   # 1.6R → lock 1.30R  (gap: 0.30R)
-            (2.00, 1.70),   # 2.0R → lock 1.70R  (gap: 0.30R)
-            (2.30, 2.10),   # 2.3R → lock 2.10R  (gap: 0.20R)
-            (2.60, 2.40),   # 2.6R → lock 2.40R  (gap: 0.20R)
-            (3.00, 2.80),   # 3.0R → lock 2.80R  (gap: 0.20R)
-            (3.30, 3.15),   # 3.3R → lock 3.15R  (gap: 0.15R)
-            (3.60, 3.45),   # 3.6R → lock 3.45R  (gap: 0.15R)
+            (1.00, 0.00),   # 1.0R → breakeven (SL → entry price)
+            (1.50, 1.00),   # 1.5R → lock 1.0R  (gap: 0.5R)
+            (2.00, 1.50),   # 2.0R → lock 1.5R  (gap: 0.5R)
+            (2.50, 2.00),   # 2.5R → lock 2.0R  (gap: 0.5R)
+            (3.00, 2.60),   # 3.0R → lock 2.6R  (gap: 0.4R)
+            (3.50, 3.10),   # 3.5R → lock 3.1R  (gap: 0.4R)
+            (4.00, 3.60),   # 4.0R → lock 3.6R  (gap: 0.4R)
         ]
+
 
         r_price = lambda n: (
             entry_price + n * (risk_amount / pos_size_usd) * entry_price
@@ -576,139 +582,159 @@ class TradeEngine:
             else entry_price - n * (risk_amount / pos_size_usd) * entry_price
         )
 
+        _consecutive_errors = 0  # track back-to-back errors to detect hard failures
+
         while pair in self._open and self._open[pair] and self._running:
-            await asyncio.sleep(POSITION_CHECK_INTERVAL)
+            try:
+                await asyncio.sleep(POSITION_CHECK_INTERVAL)
 
-            current_price = self._get_price(pair)
-            if current_price <= 0:
-                continue
+                current_price = self._get_price(pair)
+                if current_price <= 0:
+                    continue
 
-            elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
-            _ = elapsed  # tracked for UI display only, not used for exit
+                elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
+                _ = elapsed  # tracked for UI display only, not used for exit
 
-            # ── PnL calculation ──────────────────────────────
-            if direction == "long":
-                pnl_pct = (current_price - entry_price) / entry_price
-            else:
-                pnl_pct = (entry_price - current_price) / entry_price
-
-            pnl = pnl_pct * pos_size_usd
-            highest_pnl = max(highest_pnl, pnl)
-
-            # ── Trailing SL logic ────────────────────────────
-            r_current = pnl / risk_amount if risk_amount > 0 else 0
-
-            # Process all pending trail steps in order
-            sl_updated = False
-            while trail_step < len(TRAIL_STEPS):
-                trigger_r, lock_r = TRAIL_STEPS[trail_step]
-                if r_current >= trigger_r:
-                    new_sl = r_price(lock_r)
-                    if (direction == "long"  and new_sl > sl_price) or \
-                       (direction == "short" and new_sl < sl_price):
-                        sl_price    = new_sl
-                        trailing_sl = sl_price
-                        sl_updated  = True
-                        log.info(f"{pair} {trigger_r}R hit — SL → +{lock_r}R ({sl_price:.6f})")
-                    if lock_r > 0:
-                        profit_locked = True
-                    trail_step += 1
+                # ── PnL calculation ──────────────────────────────
+                if direction == "long":
+                    pnl_pct = (current_price - entry_price) / entry_price
                 else:
-                    break  # steps are ordered, no need to check further
+                    pnl_pct = (entry_price - current_price) / entry_price
 
-            # ── Live: Update SL on Binance when trailing SL moves ──
-            if sl_updated and self.mode == "live" and self._binance:
-                symbol = pair + "USDT" if not pair.endswith("USDT") else pair
-                quantity = pos_snapshot.get("quantity", 0)
-                sl_side = "SELL" if direction == "long" else "BUY"
-                try:
-                    await self._binance.cancel_all_orders(symbol)
-                    await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
-                    await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
-                    log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
-                except Exception as e:
-                    log.error(f"{pair} Failed to update Binance SL: {e}")
+                pnl = pnl_pct * pos_size_usd
+                highest_pnl = max(highest_pnl, pnl)
 
-            # Update position in DB (every 5 checks to reduce writes)
-            breakeven_hit = trail_step > 0   # at least 0.3R step triggered
-            if int(elapsed * 2) % 10 == 0:
-                db.update_position(
-                    position_id, current_price,
-                    round(pnl, 4), round(pnl_pct * 100, 4),
-                    round(highest_pnl, 4),
-                    trailing_sl=round(trailing_sl, 6) if trailing_sl else None,
-                    breakeven_hit=breakeven_hit,
-                    lock_profit_hit=profit_locked,
-                    sl_price=round(sl_price, 6),
-                )
+                # ── Trailing SL logic ────────────────────────────
+                r_current = pnl / risk_amount if risk_amount > 0 else 0
 
-            await self.on_update({
-                "type": "position_update",
-                "data": {
-                    "pair":          pair,
-                    "direction":     direction,
-                    "entry":         entry_price,
-                    "current":       current_price,
-                    "sl":            sl_price,
-                    "tp":            tp_price,
-                    "pnl":           round(pnl, 4),
-                    "pnl_pct":       round(pnl_pct * 100, 4),
-                    "r":             round(r_current, 3),
-                    "highest_pnl":   round(highest_pnl, 4),
-                    "breakeven_hit": breakeven_hit,
-                    "profit_locked": profit_locked,
-                    "trailing_sl":   round(trailing_sl, 6),
-                    "elapsed_sec":   int(elapsed),
-                    "size_usd":      round(pos_size_usd, 2),
-                    "risk_usd":      round(risk_amount, 2),
-                }
-            })
-
-            # ── Exit conditions ──────────────────────────────
-            exit_reason = None
-
-            # 4R → hard exit (profit booked)
-            if r_current >= 4.0:
-                exit_reason = "2r_target"
-            # Early stop — exit at -1.0R if no trailing step has triggered yet
-            elif r_current <= -1.0 and trail_step == 0:
-                exit_reason = "max_loss"
-            elif direction == "long":
-                if current_price <= sl_price:
-                    exit_reason = "sl" if trail_step == 0 else "trailing"
-                elif current_price >= tp_price:
-                    exit_reason = "tp"
-            else:
-                if current_price >= sl_price:
-                    exit_reason = "sl" if trail_step == 0 else "trailing"
-                elif current_price <= tp_price:
-                    exit_reason = "tp"
-
-            if exit_reason:
-                # SL / breakeven / trailing → exit at sl_price (simulates real SL order).
-                # max_loss → exit at exact -0.7R price level (simulates stop order, caps slippage).
-                # TP and 2R target → exit at current_price (market fill, no fixed order).
-                if exit_reason in ("sl", "breakeven", "trailing"):
-                    exit_p = sl_price
-                    if direction == "long":
-                        exit_pct = (sl_price - entry_price) / entry_price
+                # Process all pending trail steps in order
+                sl_updated = False
+                while trail_step < len(TRAIL_STEPS):
+                    trigger_r, lock_r = TRAIL_STEPS[trail_step]
+                    if r_current >= trigger_r:
+                        new_sl = r_price(lock_r)
+                        if (direction == "long"  and new_sl > sl_price) or \
+                           (direction == "short" and new_sl < sl_price):
+                            sl_price    = new_sl
+                            trailing_sl = sl_price
+                            sl_updated  = True
+                            log.info(f"{pair} {trigger_r}R hit — SL → +{lock_r}R ({sl_price:.6f})")
+                        if lock_r > 0:
+                            profit_locked = True
+                        trail_step += 1
                     else:
-                        exit_pct = (entry_price - sl_price) / entry_price
-                    exit_pnl = exit_pct * pos_size_usd
-                elif exit_reason == "max_loss":
-                    exit_p = r_price(-1.0)
-                    exit_pct = -1.0 * (risk_amount / pos_size_usd)
-                    exit_pnl = -1.0 * risk_amount
-                else:
-                    # tp, 2r_target — exit at current market price
-                    exit_p   = current_price
-                    exit_pnl = pnl
-                    exit_pct = pnl_pct
+                        break  # steps are ordered, no need to check further
 
-                await self._close_position(pair, trade_id, position_id, pos_snapshot,
-                                           exit_p, exit_pnl, exit_pct, risk_amount,
-                                           exit_reason, entry_time)
-                return
+                # ── Live: Update SL on Binance when trailing SL moves ──
+                if sl_updated and self.mode == "live" and self._binance:
+                    symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+                    quantity = pos_snapshot.get("quantity", 0)
+                    sl_side = "SELL" if direction == "long" else "BUY"
+                    try:
+                        await self._binance.cancel_all_orders(symbol)
+                        await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
+                        await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
+                        log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
+                    except Exception as e:
+                        log.error(f"{pair} Failed to update Binance SL: {e}")
+
+                # Update position in DB (every 5 checks to reduce writes)
+                breakeven_hit = trail_step > 0   # at least 0.3R step triggered
+                if int(elapsed * 2) % 10 == 0:
+                    try:
+                        await asyncio.to_thread(
+                            db.update_position,
+                            position_id, current_price,
+                            round(pnl, 4), round(pnl_pct * 100, 4),
+                            round(highest_pnl, 4),
+                            round(trailing_sl, 6) if trailing_sl else None,
+                            breakeven_hit,
+                            profit_locked,
+                            round(sl_price, 6),
+                        )
+                    except Exception as e:
+                        log.warning(f"{pair} DB update failed (non-fatal): {e}")
+
+                await self.on_update({
+                    "type": "position_update",
+                    "data": {
+                        "pair":          pair,
+                        "direction":     direction,
+                        "entry":         entry_price,
+                        "current":       current_price,
+                        "sl":            sl_price,
+                        "tp":            tp_price,
+                        "pnl":           round(pnl, 4),
+                        "pnl_pct":       round(pnl_pct * 100, 4),
+                        "r":             round(r_current, 3),
+                        "highest_pnl":   round(highest_pnl, 4),
+                        "breakeven_hit": breakeven_hit,
+                        "profit_locked": profit_locked,
+                        "trailing_sl":   round(trailing_sl, 6),
+                        "elapsed_sec":   int(elapsed),
+                        "size_usd":      round(pos_size_usd, 2),
+                        "risk_usd":      round(risk_amount, 2),
+                    }
+                })
+
+                # ── Exit conditions ──────────────────────────────
+                exit_reason = None
+
+                # 4R → hard exit (profit booked)
+                if r_current >= 4.0:
+                    exit_reason = "2r_target"
+                # Early stop — exit at -1.5R if no trailing step has triggered yet
+                elif r_current <= -1.5 and trail_step == 0:
+                    exit_reason = "max_loss"
+                elif direction == "long":
+                    if current_price <= sl_price:
+                        exit_reason = "sl" if trail_step == 0 else "trailing"
+                    elif current_price >= tp_price:
+                        exit_reason = "tp"
+                else:
+                    if current_price >= sl_price:
+                        exit_reason = "sl" if trail_step == 0 else "trailing"
+                    elif current_price <= tp_price:
+                        exit_reason = "tp"
+
+                if exit_reason:
+                    # SL / breakeven / trailing → exit at sl_price (simulates real SL order).
+                    # max_loss → exit at exact -0.7R price level (simulates stop order, caps slippage).
+                    # TP and 2R target → exit at current_price (market fill, no fixed order).
+                    if exit_reason in ("sl", "breakeven", "trailing"):
+                        exit_p = sl_price
+                        if direction == "long":
+                            exit_pct = (sl_price - entry_price) / entry_price
+                        else:
+                            exit_pct = (entry_price - sl_price) / entry_price
+                        exit_pnl = exit_pct * pos_size_usd
+                    elif exit_reason == "max_loss":
+                        exit_p = r_price(-1.5)
+                        exit_pct = -1.5 * (risk_amount / pos_size_usd)
+                        exit_pnl = -1.5 * risk_amount
+                    else:
+                        # tp, 2r_target — exit at current market price
+                        exit_p   = current_price
+                        exit_pnl = pnl
+                        exit_pct = pnl_pct
+
+                    await self._close_position(pair, trade_id, position_id, pos_snapshot,
+                                               exit_p, exit_pnl, exit_pct, risk_amount,
+                                               exit_reason, entry_time)
+                    return
+
+                # Reset error counter on successful iteration
+                _consecutive_errors = 0
+
+            except asyncio.CancelledError:
+                raise  # always let cancellation propagate
+            except Exception as e:
+                _consecutive_errors += 1
+                log.error(f"{pair} monitor error #{_consecutive_errors}: {e}", exc_info=True)
+                if _consecutive_errors >= 10:
+                    log.critical(f"{pair} monitor: 10 consecutive errors — stopping monitor to prevent silent failure")
+                    return
+                await asyncio.sleep(1)  # brief pause before retrying
 
     # ─── Close Position ──────────────────────────────────────
 

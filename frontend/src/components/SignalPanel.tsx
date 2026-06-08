@@ -48,10 +48,13 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
     );
   }
 
-  const score    = sig.total_score || 0;
-  const dir      = sig.signal_direction || "none";
-  const l8Pass   = sig.ema_pullback === 1;
-  const canTrade = sig.trade_signal;
+  const score       = sig.total_score || 0;
+  const dir         = sig.signal_direction || "none";
+  const l8Pass      = sig.ema_pullback === 1;
+  const canTrade    = sig.trade_signal;
+  const h1RsiState  = (sig as any).h1_rsi_state  || "neutral";
+  const h1RsiVal    = (sig as any).h1_rsi_value  ?? null;
+  const h1Blocked   = (sig as any).h1_rsi_blocked === true;
 
   const isLong    = dir === "long";
   const isShort   = dir === "short";
@@ -93,6 +96,16 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {h1RsiState === "overbought" && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-black bg-orange-500/20 border border-orange-500/40 text-orange-400">
+                OB {h1RsiVal !== null ? h1RsiVal.toFixed(0) : ""}
+              </span>
+            )}
+            {h1RsiState === "oversold" && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-black bg-blue-500/20 border border-blue-500/40 text-blue-400">
+                OS {h1RsiVal !== null ? h1RsiVal.toFixed(0) : ""}
+              </span>
+            )}
             <span className="text-white font-mono font-bold text-xs">
               ${fmt(sig.price, sig.price > 100 ? 2 : 4)}
             </span>
@@ -165,6 +178,11 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
                           bg-green-500/15 border border-green-500/40 text-green-400 text-[11px] font-black tracking-wide">
             <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
             ENTRY · {dir.toUpperCase()} · {score}/7
+          </div>
+        ) : h1Blocked ? (
+          <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-xl
+                          bg-orange-500/10 border border-orange-500/30 text-orange-400 text-[10px] font-semibold">
+            🚫 1H RSI {h1RsiState === "overbought" ? "Overbought" : "Oversold"} · {dir.toUpperCase()} blocked
           </div>
         ) : score >= 4 && sig.trend_regime === 1 ? (
           <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-xl

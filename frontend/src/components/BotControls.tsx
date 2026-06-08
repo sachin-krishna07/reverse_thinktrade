@@ -3,20 +3,14 @@ import { Play, Square, AlertTriangle } from "lucide-react";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 
 const ALL_PAIRS = [
-  // Core
-  "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
-  "LINK", "DOT", "LTC", "ATOM", "ARB", "OP", "INJ", "SUI",
-  "NEAR", "APT", "TIA", "TON", "WIF", "PEPE", "JUP",
-  // DeFi Blue-chips
-  "AAVE", "UNI", "CRV", "LDO", "PENDLE",
-  // L1 / Infra
-  "POL", "FIL", "ICP", "HBAR", "STX", "GRT",
-  // Ecosystem / Mid-caps
-  "RUNE", "PYTH", "EIGEN",
-  // Meme / High-vol
-  "SHIB", "FLOKI", "NOT", "TURBO",
-  // BTC Meta
-  "ORDI",
+  // ⭐ TIER 1
+  "JUP", "NEAR", "SUI", "STX", "OP", "DOGE", "WIF", "SOL", "NOT", "APT",
+  // ✅ TIER 2
+  "TON", "ADA", "AVAX", "ARB", "TIA", "ICP", "BTC", "ETH", "LINK", "HBAR",
+  // 👀 TIER 3
+  "DOT", "ATOM", "EIGEN", "UNI", "RUNE", "SEI", "PEPE",
+  // 🔬 TIER 4
+  "TAO", "ONDO", "ENA", "FET", "WLD", "BONK", "BCH", "POL",
 ];
 
 interface Props {
