@@ -68,14 +68,32 @@ function getDateLabel(iso: string | null | undefined) {
 }
 
 export default function TradeHistory({ mode }: Props) {
-  const [trades, setTrades]   = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [limit, setLimit]     = useState(PAGE_SIZE);
-  const [hasMore, setHasMore] = useState(false);
+  const [trades, setTrades]               = useState<Trade[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [limit, setLimit]                 = useState(PAGE_SIZE);
+  const [hasMore, setHasMore]             = useState(false);
+  const [traders, setTraders]             = useState<string[]>([]);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
   const { fmtINR } = useExchangeRate();
 
-  const fetchTrades = async (lim: number) => {
+  // Fetch distinct trader names for filter chips (lightweight — only trader_name column)
+  const fetchTraders = async (currentMode: string) => {
     const { data } = await supabase
+      .from("trades")
+      .select("trader_name")
+      .eq("mode", currentMode)
+      .eq("status", "closed")
+      .not("trader_name", "is", null);
+    if (data) {
+      const unique = [...new Set(
+        (data as { trader_name: string }[]).map((t) => t.trader_name).filter(Boolean)
+      )];
+      setTraders(unique);
+    }
+  };
+
+  const fetchTrades = async (lim: number, traderFilter: string | null) => {
+    let query = supabase
       .from("trades")
       .select("*")
       .eq("mode", mode)
@@ -83,6 +101,11 @@ export default function TradeHistory({ mode }: Props) {
       .order("created_at", { ascending: false })
       .limit(lim + 1);
 
+    if (traderFilter) {
+      query = query.eq("trader_name", traderFilter);
+    }
+
+    const { data } = await query;
     if (data) {
       setHasMore(data.length > lim);
       setTrades(data.slice(0, lim) as Trade[]);
@@ -90,27 +113,42 @@ export default function TradeHistory({ mode }: Props) {
     setLoading(false);
   };
 
+  // Reset everything on mode change
   useEffect(() => {
     setLimit(PAGE_SIZE);
     setLoading(true);
-    fetchTrades(PAGE_SIZE);
+    setSelectedTrader(null);
+    fetchTrades(PAGE_SIZE, null);
+    fetchTraders(mode);
   }, [mode]);
 
+  // Realtime subscription
   useEffect(() => {
     const channel = supabase
       .channel("trades_changes")
       .on("postgres_changes", {
         event: "*", schema: "public", table: "trades",
         filter: `mode=eq.${mode}`,
-      }, () => fetchTrades(limit))
+      }, () => {
+        fetchTrades(limit, selectedTrader);
+        fetchTraders(mode);
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [mode, limit]);
+  }, [mode, limit, selectedTrader]);
+
+  // Trader chip click — reset pagination, apply filter
+  const handleTraderSelect = (trader: string | null) => {
+    setSelectedTrader(trader);
+    setLimit(PAGE_SIZE);
+    setLoading(true);
+    fetchTrades(PAGE_SIZE, trader);
+  };
 
   const loadMore = () => {
     const newLimit = limit + PAGE_SIZE;
     setLimit(newLimit);
-    fetchTrades(newLimit);
+    fetchTrades(newLimit, selectedTrader);
   };
 
   const closedTrades = trades.filter((t) => t.status === "closed");
@@ -129,9 +167,42 @@ export default function TradeHistory({ mode }: Props) {
 
   return (
     <div className="bg-[#0f1117] border border-[#1e2433] rounded-xl overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e2433]">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[#1e2433]">
         <h2 className="text-white font-semibold text-sm uppercase tracking-wide">Trade History</h2>
-        <span className="text-xs text-gray-500">{closedTrades.length} trades</span>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Trader filter chips — only shown when 2+ distinct traders exist */}
+          {traders.length > 1 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {/* All chip */}
+              <button
+                onClick={() => handleTraderSelect(null)}
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition-all border ${
+                  selectedTrader === null
+                    ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
+                    : "bg-transparent border-[#1e2433] text-gray-500 hover:text-gray-300 hover:border-gray-500"
+                }`}
+              >
+                All
+              </button>
+              {traders.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => handleTraderSelect(t)}
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition-all border ${
+                    selectedTrader === t
+                      ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
+                      : "bg-transparent border-[#1e2433] text-gray-500 hover:text-gray-300 hover:border-gray-500"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <span className="text-xs text-gray-500">{closedTrades.length} trades</span>
+        </div>
       </div>
 
       {loading ? (
