@@ -67,16 +67,24 @@ function getDateLabel(iso: string | null | undefined) {
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: IST });
 }
 
+function getPaginationPages(current: number, total: number): (number | "...")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  if (current <= 4) return [1, 2, 3, 4, 5, "...", total];
+  if (current >= total - 3) return [1, "...", total - 4, total - 3, total - 2, total - 1, total];
+  return [1, "...", current - 1, current, current + 1, "...", total];
+}
+
 export default function TradeHistory({ mode }: Props) {
-  const [trades, setTrades]               = useState<Trade[]>([]);
-  const [loading, setLoading]             = useState(true);
-  const [limit, setLimit]                 = useState(PAGE_SIZE);
-  const [hasMore, setHasMore]             = useState(false);
-  const [traders, setTraders]             = useState<string[]>([]);
+  const [trades, setTrades]                 = useState<Trade[]>([]);
+  const [loading, setLoading]               = useState(true);
+  const [page, setPage]                     = useState(1);
+  const [totalCount, setTotalCount]         = useState(0);
+  const [traders, setTraders]               = useState<string[]>([]);
   const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
   const { fmtINR } = useExchangeRate();
 
-  // Fetch distinct trader names for filter chips (lightweight — only trader_name column)
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
   const fetchTraders = async (currentMode: string) => {
     const { data } = await supabase
       .from("trades")
@@ -92,37 +100,33 @@ export default function TradeHistory({ mode }: Props) {
     }
   };
 
-  const fetchTrades = async (lim: number, traderFilter: string | null) => {
+  const fetchTrades = async (currentPage: number, traderFilter: string | null) => {
+    setLoading(true);
+    const offset = (currentPage - 1) * PAGE_SIZE;
+
     let query = supabase
       .from("trades")
-      .select("*")
+      .select("*", { count: "exact" })
       .eq("mode", mode)
       .eq("status", "closed")
       .order("created_at", { ascending: false })
-      .limit(lim + 1);
+      .range(offset, offset + PAGE_SIZE - 1);
 
-    if (traderFilter) {
-      query = query.eq("trader_name", traderFilter);
-    }
+    if (traderFilter) query = query.eq("trader_name", traderFilter);
 
-    const { data } = await query;
-    if (data) {
-      setHasMore(data.length > lim);
-      setTrades(data.slice(0, lim) as Trade[]);
-    }
+    const { data, count } = await query;
+    if (data) setTrades(data as Trade[]);
+    setTotalCount(count ?? 0);
     setLoading(false);
   };
 
-  // Reset everything on mode change
   useEffect(() => {
-    setLimit(PAGE_SIZE);
-    setLoading(true);
+    setPage(1);
     setSelectedTrader(null);
-    fetchTrades(PAGE_SIZE, null);
+    fetchTrades(1, null);
     fetchTraders(mode);
   }, [mode]);
 
-  // Realtime subscription
   useEffect(() => {
     const channel = supabase
       .channel("trades_changes")
@@ -130,25 +134,23 @@ export default function TradeHistory({ mode }: Props) {
         event: "*", schema: "public", table: "trades",
         filter: `mode=eq.${mode}`,
       }, () => {
-        fetchTrades(limit, selectedTrader);
+        fetchTrades(page, selectedTrader);
         fetchTraders(mode);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [mode, limit, selectedTrader]);
+  }, [mode, page, selectedTrader]);
 
-  // Trader chip click — reset pagination, apply filter
   const handleTraderSelect = (trader: string | null) => {
     setSelectedTrader(trader);
-    setLimit(PAGE_SIZE);
-    setLoading(true);
-    fetchTrades(PAGE_SIZE, trader);
+    setPage(1);
+    fetchTrades(1, trader);
   };
 
-  const loadMore = () => {
-    const newLimit = limit + PAGE_SIZE;
-    setLimit(newLimit);
-    fetchTrades(newLimit, selectedTrader);
+  const goToPage = (newPage: number) => {
+    if (newPage < 1 || newPage > totalPages) return;
+    setPage(newPage);
+    fetchTrades(newPage, selectedTrader);
   };
 
   const closedTrades = trades.filter((t) => t.status === "closed");
@@ -171,34 +173,19 @@ export default function TradeHistory({ mode }: Props) {
         <h2 className="text-white font-semibold text-sm uppercase tracking-wide">Trade History</h2>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Trader filter chips — only shown when 2+ distinct traders exist */}
+          {/* Trader filter dropdown — only shown when 2+ distinct traders exist */}
           {traders.length > 1 && (
-            <div className="flex items-center gap-1 flex-wrap">
-              {/* All chip */}
-              <button
-                onClick={() => handleTraderSelect(null)}
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition-all border ${
-                  selectedTrader === null
-                    ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
-                    : "bg-transparent border-[#1e2433] text-gray-500 hover:text-gray-300 hover:border-gray-500"
-                }`}
-              >
-                All
-              </button>
+            <select
+              value={selectedTrader ?? ""}
+              onChange={(e) => handleTraderSelect(e.target.value || null)}
+              className="bg-[#0d1117] border border-[#1e2433] text-xs text-gray-300 rounded-lg px-2.5 py-1.5
+                         outline-none focus:border-indigo-500/60 cursor-pointer transition-colors"
+            >
+              <option value="">All Traders</option>
               {traders.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => handleTraderSelect(t)}
-                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold transition-all border ${
-                    selectedTrader === t
-                      ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
-                      : "bg-transparent border-[#1e2433] text-gray-500 hover:text-gray-300 hover:border-gray-500"
-                  }`}
-                >
-                  {t}
-                </button>
+                <option key={t} value={t}>{t}</option>
               ))}
-            </div>
+            </select>
           )}
 
           <span className="text-xs text-gray-500">{closedTrades.length} trades</span>
@@ -315,22 +302,54 @@ export default function TradeHistory({ mode }: Props) {
             </table>
           </div>
 
-          {/* Load More — always show count, button only if more exist */}
-          <div className="px-4 py-3 border-t border-[#1e2433] flex items-center justify-between">
+          {/* Pagination */}
+          <div className="px-4 py-3 border-t border-[#1e2433] flex items-center justify-between flex-wrap gap-2">
             <span className="text-[10px] text-gray-600">
-              Showing {closedTrades.length} trades
+              {totalCount > 0
+                ? `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalCount)} of ${totalCount} trades`
+                : "0 trades"}
             </span>
-            {hasMore ? (
-              <button
-                onClick={loadMore}
-                className="px-5 py-1.5 rounded-lg text-xs font-semibold
-                           bg-indigo-500/15 border border-indigo-500/40 text-indigo-300
-                           hover:bg-indigo-500/25 transition-all"
-              >
-                Load More ↓
-              </button>
-            ) : (
-              <span className="text-[10px] text-gray-600">All trades loaded</span>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => goToPage(page - 1)}
+                  disabled={page === 1}
+                  className="px-2.5 py-1 rounded text-xs text-gray-400 border border-[#1e2433]
+                             hover:border-indigo-500/40 hover:text-indigo-300 disabled:opacity-30
+                             disabled:cursor-not-allowed transition-all"
+                >
+                  ‹
+                </button>
+
+                {getPaginationPages(page, totalPages).map((p, i) =>
+                  p === "..." ? (
+                    <span key={`ellipsis-${i}`} className="px-1.5 text-xs text-gray-600">…</span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => goToPage(p as number)}
+                      className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+                        page === p
+                          ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
+                          : "border-[#1e2433] text-gray-400 hover:border-indigo-500/40 hover:text-indigo-300"
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
+
+                <button
+                  onClick={() => goToPage(page + 1)}
+                  disabled={page === totalPages}
+                  className="px-2.5 py-1 rounded text-xs text-gray-400 border border-[#1e2433]
+                             hover:border-indigo-500/40 hover:text-indigo-300 disabled:opacity-30
+                             disabled:cursor-not-allowed transition-all"
+                >
+                  ›
+                </button>
+              </div>
             )}
           </div>
         </>

@@ -71,11 +71,13 @@ function ChartTooltip({ active, payload, label, fmt }: any) {
 
 export default function Analytics() {
   const { state } = useBotSocket();
-  const [mode, setMode]         = useState<"demo" | "live">("demo");
-  const [trades, setTrades]     = useState<Trade[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [equityPeriod, setEquityPeriod] = useState<string>("All");
-  const [hourlyPeriod, setHourlyPeriod] = useState<string>("All");
+  const [mode, setMode]                   = useState<"demo" | "live">("demo");
+  const [trades, setTrades]               = useState<Trade[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [traders, setTraders]             = useState<string[]>([]);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
+  const [equityPeriod, setEquityPeriod]   = useState<string>("All");
+  const [hourlyPeriod, setHourlyPeriod]   = useState<string>("All");
   const { fmtINR } = useExchangeRate();
 
   // Auto-sync with bot mode (live/demo) whenever it changes
@@ -92,25 +94,52 @@ export default function Analytics() {
     "6M": 180, "9M": 270, "1Y": 365,
   };
 
-  const fetchTrades = async (m: string) => {
-    setLoading(true);
+  const fetchTraders = async (m: string) => {
     const { data } = await supabase
+      .from("trades")
+      .select("trader_name")
+      .eq("mode", m)
+      .eq("status", "closed")
+      .not("trader_name", "is", null);
+    if (data) {
+      const unique = [...new Set(
+        (data as { trader_name: string }[]).map((t) => t.trader_name).filter(Boolean)
+      )];
+      setTraders(unique);
+    }
+  };
+
+  const fetchTrades = async (m: string, traderFilter: string | null = null) => {
+    setLoading(true);
+    let query = supabase
       .from("trades")
       .select("pnl, net_pnl, r_multiple, signals_at_entry, pair, direction, exit_reason, created_at, style, signal_score")
       .eq("mode", m).eq("status", "closed")
       .order("created_at", { ascending: true })
       .limit(10000);
+    if (traderFilter) query = query.eq("trader_name", traderFilter);
+    const { data } = await query;
     setTrades((data as Trade[]) || []);
     setLoading(false);
   };
 
-  useEffect(() => { fetchTrades(mode); }, [mode]);
+  const handleTraderSelect = (trader: string | null) => {
+    setSelectedTrader(trader);
+    fetchTrades(mode, trader);
+  };
+
+  useEffect(() => {
+    setSelectedTrader(null);
+    fetchTrades(mode, null);
+    fetchTraders(mode);
+  }, [mode]);
+
   useEffect(() => {
     const ch = supabase.channel("analytics_watch")
       .on("postgres_changes", { event: "*", schema: "public", table: "trades", filter: `mode=eq.${mode}` },
-        () => fetchTrades(mode)).subscribe();
+        () => { fetchTrades(mode, selectedTrader); fetchTraders(mode); }).subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [mode]);
+  }, [mode, selectedTrader]);
 
   // ── Compute all stats ──────────────────────────────────────
   const stats = useMemo(() => {
@@ -416,17 +445,32 @@ export default function Analytics() {
                 <p className="text-[10px] text-gray-500">Performance breakdown · signal quality · edge analysis</p>
               </div>
             </div>
-            <div className="flex gap-1 bg-[#0d1117] border border-[#1e2433] rounded-lg p-1">
-              {(["demo", "live"] as const).map(m => (
-                <button key={m} onClick={() => setMode(m)}
-                  className={`px-4 py-1.5 rounded text-xs font-bold transition-all ${
-                    mode === m
-                      ? m === "live"
-                        ? "bg-red-500/20 text-red-300 border border-red-500/40"
-                        : "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
-                      : "text-gray-500 hover:text-gray-300"
-                  }`}>{m.toUpperCase()}</button>
-              ))}
+            <div className="flex items-center gap-2">
+              {traders.length > 1 && (
+                <select
+                  value={selectedTrader ?? ""}
+                  onChange={(e) => handleTraderSelect(e.target.value || null)}
+                  className="bg-[#0d1117] border border-[#1e2433] text-xs text-gray-300 rounded-lg px-2.5 py-1.5
+                             outline-none focus:border-indigo-500/60 cursor-pointer transition-colors"
+                >
+                  <option value="">All Traders</option>
+                  {traders.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              )}
+              <div className="flex gap-1 bg-[#0d1117] border border-[#1e2433] rounded-lg p-1">
+                {(["demo", "live"] as const).map(m => (
+                  <button key={m} onClick={() => setMode(m)}
+                    className={`px-4 py-1.5 rounded text-xs font-bold transition-all ${
+                      mode === m
+                        ? m === "live"
+                          ? "bg-red-500/20 text-red-300 border border-red-500/40"
+                          : "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
+                        : "text-gray-500 hover:text-gray-300"
+                    }`}>{m.toUpperCase()}</button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

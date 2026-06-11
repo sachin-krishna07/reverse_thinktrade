@@ -562,17 +562,18 @@ class TradeEngine:
         trailing_sl    = sl_price
 
         # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
-        # 1.0R → breakeven (SL moves to entry)
-        # 1.5R → trailing starts, below 1.5R breakeven SL holds
-        # Gap 0.5R early, tightens to 0.4R at higher R
+        # 1.0R → lock 0.75R immediately (no breakeven wait)
+        # Steps every ~0.3R, gap 0.25-0.30R throughout
         TRAIL_STEPS = [
-            (1.00, 0.00),   # 1.0R → breakeven (SL → entry price)
-            (1.50, 1.00),   # 1.5R → lock 1.0R  (gap: 0.5R)
-            (2.00, 1.50),   # 2.0R → lock 1.5R  (gap: 0.5R)
-            (2.50, 2.00),   # 2.5R → lock 2.0R  (gap: 0.5R)
-            (3.00, 2.60),   # 3.0R → lock 2.6R  (gap: 0.4R)
-            (3.50, 3.10),   # 3.5R → lock 3.1R  (gap: 0.4R)
-            (4.00, 3.60),   # 4.0R → lock 3.6R  (gap: 0.4R)
+            (1.00, 0.75),   # 1.0R → lock 0.75R (gap: 0.25R)
+            (1.30, 1.00),   # 1.3R → lock 1.0R  (gap: 0.30R)
+            (1.50, 1.20),   # 1.5R → lock 1.2R  (gap: 0.30R)
+            (1.80, 1.50),   # 1.8R → lock 1.5R  (gap: 0.30R)
+            (2.10, 1.80),   # 2.1R → lock 1.8R  (gap: 0.30R)
+            (2.50, 2.20),   # 2.5R → lock 2.2R  (gap: 0.30R)
+            (3.00, 2.70),   # 3.0R → lock 2.7R  (gap: 0.30R)
+            (3.50, 3.20),   # 3.5R → lock 3.2R  (gap: 0.30R)
+            (4.00, 3.70),   # 4.0R → lock 3.7R  (gap: 0.30R)
         ]
 
 
