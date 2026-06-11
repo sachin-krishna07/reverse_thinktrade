@@ -121,9 +121,9 @@ export default function Index() {
           <WalletCard mode={state.mode} />
           {positions.length > 0
             ? positions.map((p) => (
-                <PositionCard key={p.pair} position={p} lastTrade={state.lastTrade} onForceClose={forceClose} />
+                <PositionCard key={p.pair} position={p} lastTrade={state.lastTrade} onForceClose={() => forceClose(p.pair)} />
               ))
-            : <PositionCard position={null} lastTrade={state.lastTrade} onForceClose={forceClose} />
+            : <PositionCard position={null} lastTrade={state.lastTrade} onForceClose={() => forceClose()} />
           }
           <PerfStats mode={state.mode || "demo"} />
         </aside>

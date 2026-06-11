@@ -276,8 +276,11 @@ export function useBotSocket() {
     return r.json();
   };
 
-  const forceClose = async () => {
-    const r = await fetch(`${API_URL}/api/bot/force-close`, { method: "POST" });
+  const forceClose = async (pair?: string) => {
+    const url = pair
+      ? `${API_URL}/api/bot/force-close/${pair}`
+      : `${API_URL}/api/bot/force-close`;
+    const r = await fetch(url, { method: "POST" });
     return r.json();
   };
 

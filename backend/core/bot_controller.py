@@ -308,3 +308,10 @@ class BotController:
             price = self._md.get_price(pair)
             if price > 0:
                 await self._engine.force_close(pair, price)
+
+    async def force_close_pair(self, pair: str):
+        if not self._engine:
+            return
+        price = self._md.get_price(pair)
+        if price > 0:
+            await self._engine.force_close(pair, price)

@@ -215,7 +215,12 @@ async def stop_bot():
 @app.post("/api/bot/force-close")
 async def force_close():
     await bot.force_close_current()
-    return {"ok": True, "msg": "Position force closed"}
+    return {"ok": True, "msg": "All positions force closed"}
+
+@app.post("/api/bot/force-close/{pair}")
+async def force_close_pair(pair: str):
+    await bot.force_close_pair(pair)
+    return {"ok": True, "msg": f"{pair} force closed"}
 
 
 @app.get("/api/bot/status")
