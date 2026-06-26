@@ -108,8 +108,16 @@ SWING = {
 # ─── Risk Rules (hardcoded, never bypass) ───────────────────
 MAX_DAILY_LOSS_PCT       = 100.0
 MAX_WEEKLY_DRAWDOWN_PCT  = 100.0
-MAX_CONSECUTIVE_LOSSES   = 2
-COOLDOWN_MINUTES         = 30
+
+# Progressive cooldown: (losses_in_last_5_trades, cooldown_minutes)
+LOSS_WINDOW      = 5
+COOLDOWN_LEVELS  = [(3, 30), (4, 60), (5, 120)]
+
+# Max simultaneous trades per mode
+MAX_TRADES_NORMAL     = 3   # 0-2 losses in window
+MAX_TRADES_SEMI       = 2   # recovering (1 win after restricted)
+MAX_TRADES_RESTRICTED = 1   # just came out of cooldown
+
 MAX_LEVERAGE             = 20.0  # hard ceiling — user can never go above this
 DEFAULT_LEVERAGE         = 5.0   # default if user doesn't specify
 MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7

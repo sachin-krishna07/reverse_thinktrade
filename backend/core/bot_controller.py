@@ -212,7 +212,7 @@ class BotController:
                 can_enter = (
                     allow_entry
                     and result.trade_signal
-                    and total_open < 3
+                    and total_open < self._risk.max_trades()
                     and open_count == 0
                     and not entered_this_cycle   # max 1 trade per scan cycle
                     and not blocked_hours        # no trades 10am–5pm IST

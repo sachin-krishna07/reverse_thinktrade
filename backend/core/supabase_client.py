@@ -151,6 +151,17 @@ def count_consecutive_losses(mode: str) -> int:
             break
     return count
 
+def count_losses_in_window(mode: str, window: int = 5) -> int:
+    """Count total losses (not necessarily consecutive) in last `window` closed trades."""
+    result = get_client().table("trades")\
+        .select("pnl")\
+        .eq("mode", mode)\
+        .eq("status", "closed")\
+        .order("exit_time", desc=True)\
+        .limit(window)\
+        .execute()
+    return sum(1 for r in (result.data or []) if r["pnl"] is not None and r["pnl"] < 0)
+
 def get_total_pnl(mode: str) -> float:
     result = get_client().table("trades")\
         .select("net_pnl")\
