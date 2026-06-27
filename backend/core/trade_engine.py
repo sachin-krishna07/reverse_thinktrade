@@ -803,7 +803,7 @@ class TradeEngine:
         )
         await asyncio.to_thread(db.upsert_performance, self.mode)
 
-        self.risk.record_trade_result(pnl)
+        self.risk.record_trade_result(pnl, self.mode)
 
         log.info(f"TRADE CLOSED: {pair} | {reason.upper()} | PnL=${pnl:.2f} ({pnl_pct*100:.2f}%) | R={r_multiple:.2f}")
 

@@ -26,24 +26,68 @@ class RiskManager:
         self._cooldown_level: int          = 0   # index into COOLDOWN_LEVELS
         self._consecutive_wins: int        = 0   # wins in semi_normal mode
 
-    def sync_from_db(self, mode: str):
-        """On bot restart — check last 5 trades and set appropriate mode."""
-        losses = db.count_losses_in_window(mode, LOSS_WINDOW)
-        log.info(f"Risk sync: {losses}/{LOSS_WINDOW} losses in last {LOSS_WINDOW} trades")
+    def _evaluate_window_cooldown(self, mode: str, anchor: Optional[datetime] = None) -> bool:
+        """Check the loss window and start the cooldown anchored to the triggering
+        loss's CLOSE time — not to `now`.
 
-        # Find highest applicable cooldown level
+        anchor: explicit countdown start time. If None, the close time of the most
+        recent loss in the window is used (read from the DB). This makes the
+        countdown reflect real elapsed time since the loss closed, so:
+          • a loss that closed 10 min ago shows 20 min remaining (not a fresh 30),
+          • losses whose cooldown window already elapsed (e.g. yesterday's trades)
+            do NOT spawn a fresh countdown.
+
+        Returns True if a cooldown is currently active (mode set to COOLDOWN).
+        """
+        losses, latest_loss_exit = db.get_loss_window_info(mode, LOSS_WINDOW)
+
         triggered_level = None
         for i, (min_losses, _) in enumerate(COOLDOWN_LEVELS):
             if losses >= min_losses:
                 triggered_level = i
 
-        if triggered_level is not None:
-            self._trade_mode    = MODE_RESTRICTED
-            self._cooldown_level = triggered_level
+        if triggered_level is None:
+            return False
+
+        minutes        = COOLDOWN_LEVELS[triggered_level][1]
+        now            = datetime.now(timezone.utc)
+        start          = anchor or latest_loss_exit or now
+        cooldown_until = start + timedelta(minutes=minutes)
+
+        self._cooldown_level   = triggered_level
+        self._consecutive_wins = 0
+
+        if now < cooldown_until:
+            self._cooldown_until = cooldown_until
+            self._trade_mode     = MODE_COOLDOWN
+            remaining_min = int((cooldown_until - now).total_seconds()) // 60
             log.warning(
-                f"Risk sync: {losses}/{LOSS_WINDOW} losses detected on restart "
-                f"→ starting in RESTRICTED mode (1 trade max)"
+                f"🚫 {losses}/{LOSS_WINDOW} losses → {minutes} min cooldown "
+                f"(level {triggered_level + 1}). Started {start.strftime('%H:%M:%S UTC')}, "
+                f"{remaining_min} min left, until {cooldown_until.strftime('%H:%M:%S UTC')}"
             )
+            return True
+
+        # Triggering loss closed long enough ago that the cooldown has already
+        # elapsed (e.g. trades from a previous day) → treat it as served.
+        self._cooldown_until = None
+        self._trade_mode     = MODE_RESTRICTED
+        log.info(
+            f"{losses}/{LOSS_WINDOW} losses in window but triggering loss closed "
+            f">{minutes} min ago → cooldown already served, RESTRICTED mode (1 trade)."
+        )
+        return False
+
+    def sync_from_db(self, mode: str):
+        """On bot restart — re-evaluate the loss window and restore the correct mode.
+
+        The cooldown (if any) is anchored to the last loss's close time, so a
+        restart resumes the *remaining* countdown rather than starting a fresh one.
+        """
+        if self._evaluate_window_cooldown(mode):
+            log.warning("Risk sync: active cooldown restored from DB (anchored to last loss close)")
+        elif self._trade_mode == MODE_RESTRICTED:
+            log.warning("Risk sync: recent loss cluster → RESTRICTED mode (1 trade max)")
         else:
             self._trade_mode = MODE_NORMAL
             log.info("Risk sync: loss window normal → NORMAL mode (3 trades)")
@@ -56,8 +100,13 @@ class RiskManager:
         self._consecutive_wins = 0
         log.info("Risk manager reset — fresh start")
 
-    def record_trade_result(self, pnl: float):
-        """Called after every trade closes — update mode based on result."""
+    def record_trade_result(self, pnl: float, mode: str):
+        """Called after every trade closes — update mode based on result.
+
+        `mode` is the bot's trading mode (used to scope the loss-window query).
+        On a loss this fires the moment the trade closes, so the cooldown
+        countdown starts at close time — not when the next signal arrives.
+        """
         now = datetime.now(timezone.utc)
 
         if pnl >= 0:
@@ -101,10 +150,14 @@ class RiskManager:
                     f"{minutes} min (level {next_level + 1}/{len(COOLDOWN_LEVELS)}). "
                     f"No trades until {self._cooldown_until.strftime('%H:%M:%S UTC')}"
                 )
-            elif self._trade_mode == MODE_SEMI:
-                # Back to restricted — window check in check() will handle cooldown if needed
-                log.warning("❌ Loss in semi-normal mode → back to RESTRICTED (1 trade). Window will be re-evaluated.")
-                self._trade_mode = MODE_RESTRICTED
+            else:
+                # NORMAL or SEMI loss → re-evaluate the loss window right now (at
+                # close time) so the cooldown countdown starts immediately, anchored
+                # to this loss's close time, instead of waiting for the next signal.
+                if self._trade_mode == MODE_SEMI:
+                    log.warning("❌ Loss in semi-normal mode → back to RESTRICTED (1 trade). Window will be re-evaluated.")
+                    self._trade_mode = MODE_RESTRICTED
+                self._evaluate_window_cooldown(mode, anchor=now)
 
     def check(self, mode: str, wallet: Dict) -> Tuple[bool, str]:
         """Returns (allowed, reason). Called before every trade entry."""
@@ -132,26 +185,16 @@ class RiskManager:
                 )
 
         # ── 2. Window-based loss check (normal + semi_normal) ────
+        # Anchored to the triggering loss's close time (anchor=None → DB lookup),
+        # so the countdown reflects real elapsed time and stale losses don't
+        # spawn a fresh cooldown.
         if self._trade_mode in (MODE_NORMAL, MODE_SEMI):
-            losses = db.count_losses_in_window(mode, LOSS_WINDOW)
-
-            triggered_level = None
-            for i, (min_losses, _) in enumerate(COOLDOWN_LEVELS):
-                if losses >= min_losses:
-                    triggered_level = i
-
-            if triggered_level is not None:
-                min_losses_hit, minutes = COOLDOWN_LEVELS[triggered_level]
-                self._cooldown_level  = triggered_level
-                self._cooldown_until  = now + timedelta(minutes=minutes)
-                self._trade_mode      = MODE_COOLDOWN
-                self._consecutive_wins = 0
+            if self._evaluate_window_cooldown(mode):
+                remaining_sec = int((self._cooldown_until - now).total_seconds())
                 reason = (
-                    f"🚫 {losses}/{LOSS_WINDOW} losses in last {LOSS_WINDOW} trades "
-                    f"→ {minutes} min cooldown (level {triggered_level + 1}). "
-                    f"No trades until {self._cooldown_until.strftime('%H:%M:%S UTC')}"
+                    f"🚫 Cooldown active: {remaining_sec // 60}m {remaining_sec % 60}s remaining "
+                    f"(level {self._cooldown_level + 1}/{len(COOLDOWN_LEVELS)})"
                 )
-                log.warning(reason)
                 return False, reason
 
         # ── 3. Daily loss limit ──────────────────────────────────
