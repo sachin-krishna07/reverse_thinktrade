@@ -173,13 +173,33 @@ class RiskManager:
 
     def max_trades(self) -> int:
         """How many simultaneous trades are allowed in current mode."""
+        # Cooldown expiry must be checked here — not just inside check().
+        # check() runs inside enter(), which only fires when can_enter=True,
+        # which requires max_trades()>0. Without this check here, the bot
+        # stays permanently stuck in COOLDOWN even after the timer expires.
+        if self._trade_mode == MODE_COOLDOWN:
+            if self._cooldown_until and datetime.now(timezone.utc) >= self._cooldown_until:
+                self._cooldown_until = None
+                self._trade_mode     = MODE_RESTRICTED
+                log.warning(
+                    "⏰ Cooldown expired → RESTRICTED mode (1 trade allowed). "
+                    "Win = semi-normal, Loss = escalated cooldown."
+                )
+            else:
+                remaining = int((self._cooldown_until - datetime.now(timezone.utc)).total_seconds()) \
+                            if self._cooldown_until else 0
+                remaining_min = remaining // 60
+                remaining_s   = remaining % 60
+                log.debug(f"Cooldown active — {remaining_min}m {remaining_s}s remaining. No trades.")
+                return 0
+
         if self._trade_mode == MODE_NORMAL:
             return MAX_TRADES_NORMAL      # 3
         if self._trade_mode == MODE_SEMI:
             return MAX_TRADES_SEMI        # 2
         if self._trade_mode == MODE_RESTRICTED:
             return MAX_TRADES_RESTRICTED  # 1
-        return 0  # cooldown — no trades
+        return 0
 
     def status(self) -> Dict:
         """Snapshot for logging/broadcast."""

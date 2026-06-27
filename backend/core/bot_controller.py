@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set
 
 from config import SCALPING, SWING, SIGNAL_BROADCAST_INTERVAL, MIN_SIGNAL_SCORE
@@ -205,17 +205,12 @@ class BotController:
                 open_count   = self._engine.count_open_positions(pair)
                 total_open   = self._engine.total_open_positions()
 
-                # No new entries between 10:00–17:00 IST (UTC+5:30)
-                ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-                blocked_hours = 10 <= ist_now.hour < 17
-
                 can_enter = (
                     allow_entry
                     and result.trade_signal
                     and total_open < self._risk.max_trades()
                     and open_count == 0
                     and not entered_this_cycle   # max 1 trade per scan cycle
-                    and not blocked_hours        # no trades 10am–5pm IST
                 )
 
                 if can_enter:
