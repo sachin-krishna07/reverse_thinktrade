@@ -98,6 +98,7 @@ class BotController:
             asyncio.create_task(self._wallet_broadcast_loop()),
             asyncio.create_task(self._price_ticker_loop()),
             asyncio.create_task(self._binance_reconcile_loop()),
+            asyncio.create_task(self._cooldown_log_loop()),
         ]
 
         await self._broadcast({"type": "bot_status", "data": {"running": True, "mode": mode, "style": style, "pairs": pairs}})
@@ -284,6 +285,27 @@ class BotController:
             "open_pairs":   list(self._engine._open.keys()) if self._engine else [],
             "positions":    positions,
         }
+
+    async def _cooldown_log_loop(self):
+        """Har 10 min mein cooldown ka remaining time log karo (agar active hai)."""
+        while self._running:
+            await asyncio.sleep(10 * 60)
+            if not self._running:
+                break
+            try:
+                if self._engine:
+                    status = self._engine.risk.status()
+                    remaining = status.get("cooldown_remaining_sec")
+                    if remaining and remaining > 0:
+                        mins = remaining // 60
+                        secs = remaining % 60
+                        level = status.get("cooldown_level", 0) + 1
+                        log.warning(
+                            f"⏳ Cooldown active — {mins}m {secs}s remaining "
+                            f"(level {level}/3). No new trades until cooldown expires."
+                        )
+            except Exception as e:
+                log.error(f"Cooldown log loop error: {e}", exc_info=True)
 
     async def _binance_reconcile_loop(self):
         """
