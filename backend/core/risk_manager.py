@@ -234,15 +234,19 @@ class RiskManager:
     def status(self) -> Dict:
         """Snapshot for logging/broadcast."""
         remaining = None
+        total_min = None
         if self._trade_mode == MODE_COOLDOWN and self._cooldown_until:
             secs = int((self._cooldown_until - datetime.now(timezone.utc)).total_seconds())
             remaining = max(0, secs)
+            if self._cooldown_level < len(COOLDOWN_LEVELS):
+                total_min = COOLDOWN_LEVELS[self._cooldown_level][1]
         return {
-            "trade_mode":       self._trade_mode,
-            "max_trades":       self.max_trades(),
-            "cooldown_level":   self._cooldown_level,
+            "trade_mode":             self._trade_mode,
+            "max_trades":             self.max_trades(),
+            "cooldown_level":         self._cooldown_level,
             "cooldown_remaining_sec": remaining,
-            "consecutive_wins": self._consecutive_wins,
+            "cooldown_total_min":     total_min,
+            "consecutive_wins":       self._consecutive_wins,
         }
 
     def calculate_position(self, balance: float, capital_pct: float,

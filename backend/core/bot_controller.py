@@ -297,12 +297,14 @@ class BotController:
                     status = self._engine.risk.status()
                     remaining = status.get("cooldown_remaining_sec")
                     if remaining and remaining > 0:
-                        mins = remaining // 60
-                        secs = remaining % 60
-                        level = status.get("cooldown_level", 0) + 1
+                        mins      = remaining // 60
+                        secs      = remaining % 60
+                        level     = status.get("cooldown_level", 0) + 1
+                        total_min = status.get("cooldown_total_min") or "?"
                         log.warning(
                             f"⏳ Cooldown active — {mins}m {secs}s remaining "
-                            f"(level {level}/3). No new trades until cooldown expires."
+                            f"out of {total_min} min (level {level}/3). "
+                            f"No new trades until cooldown expires."
                         )
             except Exception as e:
                 log.error(f"Cooldown log loop error: {e}", exc_info=True)
