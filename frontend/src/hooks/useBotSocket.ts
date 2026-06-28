@@ -63,6 +63,15 @@ export interface WalletData {
   total_pnl_pct: number;
 }
 
+export interface RiskStatus {
+  trade_mode: string;              // "normal" | "semi_normal" | "restricted" | "cooldown"
+  max_trades: number;
+  cooldown_level: number;
+  cooldown_remaining_sec: number | null;
+  cooldown_total_min: number | null;
+  consecutive_wins: number;
+}
+
 export interface LogEntry {
   ts: number;
   level: "DEBUG" | "INFO" | "WARNING" | "ERROR";
@@ -79,6 +88,7 @@ export interface BotState {
   signals: Record<string, SignalData>;
   positions: Record<string, PositionData>;
   wallet: WalletData | null;
+  riskStatus: RiskStatus | null;
   lastTrade: any | null;
   logs: LogEntry[];
 }
@@ -92,6 +102,7 @@ const initialState: BotState = {
   signals: {},
   positions: {},
   wallet: null,
+  riskStatus: null,
   lastTrade: null,
   logs: [],
 };
@@ -201,9 +212,15 @@ export function useBotSocket() {
         });
         break;
 
-      case "wallet_update":
-        setState((s) => ({ ...s, wallet: msg.data }));
+      case "wallet_update": {
+        const { risk_status, ...walletData } = msg.data;
+        setState((s) => ({
+          ...s,
+          wallet: walletData,
+          riskStatus: risk_status || s.riskStatus,
+        }));
         break;
+      }
 
       case "bot_status":
         setState((s) => ({

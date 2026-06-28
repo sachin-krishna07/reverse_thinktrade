@@ -250,10 +250,11 @@ class BotController:
     async def _wallet_broadcast_loop(self):
         while self._running:
             try:
-                wallet = self._engine.wallet_snapshot() if self._engine else {}
+                wallet      = self._engine.wallet_snapshot() if self._engine else {}
+                risk_status = self._engine.risk.status() if self._engine else {}
                 await self._broadcast({
                     "type": "wallet_update",
-                    "data": wallet,
+                    "data": {**wallet, "risk_status": risk_status},
                 })
             except Exception as e:
                 log.debug(f"Wallet broadcast error: {e}")

@@ -84,6 +84,7 @@ export default function Index() {
         running={state.running}
         mode={state.mode}
         style={state.style}
+        riskStatus={state.riskStatus}
         sidebarOpen={sidebarOpen}
         onSidebarToggle={() => setSidebarOpen((v) => !v)}
       />
