@@ -138,26 +138,13 @@ class RiskManager:
             # ── LOSS ─────────────────────────────────────────────
             self._consecutive_wins = 0
 
-            if self._trade_mode == MODE_RESTRICTED:
-                # Escalate to next cooldown level
-                next_level   = min(self._cooldown_level + 1, len(COOLDOWN_LEVELS) - 1)
-                minutes      = COOLDOWN_LEVELS[next_level][1]
-                self._cooldown_level  = next_level
-                self._cooldown_until  = now + timedelta(minutes=minutes)
-                self._trade_mode      = MODE_COOLDOWN
-                log.warning(
-                    f"❌ LOSS in restricted mode → ESCALATED cooldown "
-                    f"{minutes} min (level {next_level + 1}/{len(COOLDOWN_LEVELS)}). "
-                    f"No trades until {self._cooldown_until.strftime('%H:%M:%S UTC')}"
-                )
-            else:
-                # NORMAL or SEMI loss → re-evaluate the loss window right now (at
-                # close time) so the cooldown countdown starts immediately, anchored
-                # to this loss's close time, instead of waiting for the next signal.
-                if self._trade_mode == MODE_SEMI:
-                    log.warning("❌ Loss in semi-normal mode → back to RESTRICTED (1 trade). Window will be re-evaluated.")
-                    self._trade_mode = MODE_RESTRICTED
-                self._evaluate_window_cooldown(mode, anchor=now)
+            # Har loss ke baad (RESTRICTED / SEMI / NORMAL) — window se decide karo.
+            # 3/5 losses → 30 min, 4/5 → 60 min, 5/5 → 120 min.
+            # Escalation hataya: cooldown hamesha actual window pe based hoga.
+            if self._trade_mode == MODE_SEMI:
+                log.warning("❌ Loss in semi-normal mode → evaluating window for cooldown.")
+                self._trade_mode = MODE_RESTRICTED
+            self._evaluate_window_cooldown(mode, anchor=now)
 
     def check(self, mode: str, wallet: Dict) -> Tuple[bool, str]:
         """Returns (allowed, reason). Called before every trade entry."""
