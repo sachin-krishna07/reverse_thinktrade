@@ -1,12 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useBotSocket } from "@/hooks/useBotSocket";
+import { useBotSocketContext } from "@/hooks/BotSocketContext";
 import BotControls from "@/components/BotControls";
 import SignalPanel from "@/components/SignalPanel";
 import WalletCard from "@/components/WalletCard";
 import PositionCard from "@/components/PositionCard";
 import PerfStats from "@/components/PerfStats";
 import AppHeader from "@/components/AppHeader";
-import { Clock, TrendingUp, TrendingDown, ChevronUp, ChevronDown } from "lucide-react";
+import { Clock, TrendingUp, TrendingDown, ChevronUp, ChevronDown, Activity } from "lucide-react";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 
 function formatSeconds(s: number) {
@@ -19,7 +19,7 @@ const DEFAULT_HEIGHT = 220;
 const MAX_HEIGHT = 520;
 
 export default function Index() {
-  const { state, startBot, stopBot, forceClose } = useBotSocket();
+  const { state, startBot, stopBot, forceClose } = useBotSocketContext();
   const [sidebarOpen, setSidebarOpen]   = useState(false);
   const [drawerHeight, setDrawerHeight] = useState(MIN_HEIGHT);
   const [isOpen, setIsOpen]             = useState(false);
@@ -27,6 +27,8 @@ export default function Index() {
 
   const positions   = Object.values(state.positions);
   const pos         = positions[0] ?? null;
+  const totalPnl    = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const totalPnlPct = positions.reduce((sum, p) => sum + (p.pnl_pct ?? 0), 0);
   const isDragging  = useRef(false);
   const startY      = useRef(0);
   const startHeight = useRef(0);
@@ -134,12 +136,15 @@ export default function Index() {
           className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#07090f] min-w-0"
           style={{ paddingBottom: `${currentHeight + 16}px` }}
         >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="text-white font-semibold text-base leading-tight">Live Signal Monitor</h1>
-              <p className="text-gray-500 text-xs mt-0.5">
-                7-layer confluence engine · min 4/7 signals required to trade
-              </p>
+          <div className="flex items-center justify-between gap-3 border-b border-[#1a2030] pb-3 mb-1">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+                <Activity size={15} className="text-indigo-400" />
+              </div>
+              <div>
+                <h1 className="text-base font-bold text-white leading-tight">Live Signal Monitor</h1>
+                <p className="text-[10px] text-gray-500 hidden sm:block">7-layer confluence engine · min 4/7 signals required to trade</p>
+              </div>
             </div>
             {state.running && (
               <div className="text-xs text-gray-500 bg-[#0d1117] border border-[#1e2433] px-3 py-1.5 rounded-lg flex-shrink-0">
@@ -192,9 +197,18 @@ export default function Index() {
                 Active Trades
               </span>
               {positions.length > 0 && (
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 animate-pulse">
-                  {positions.length} open
-                </span>
+                <>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 animate-pulse">
+                    {positions.length} open
+                  </span>
+                  <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-full border ${
+                    totalPnl >= 0
+                      ? "bg-green-500/10 border-green-500/20 text-green-400"
+                      : "bg-red-500/10 border-red-500/20 text-red-400"
+                  }`}>
+                    {totalPnl >= 0 ? "+" : ""}{fmtINR(totalPnl)} ({totalPnlPct >= 0 ? "+" : ""}{totalPnlPct.toFixed(2)}%)
+                  </span>
+                </>
               )}
               {positions.length === 0 && (
                 <span className="text-[10px] text-gray-600">0 open</span>

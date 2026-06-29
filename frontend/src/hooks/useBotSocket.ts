@@ -107,6 +107,9 @@ const initialState: BotState = {
   logs: [],
 };
 
+const entryAudio = new Audio(new URL("../ringtone/enrty.mp3", import.meta.url).href);
+const exitAudio  = new Audio(new URL("../ringtone/exit-trade.mp3", import.meta.url).href);
+
 export function useBotSocket() {
   const [state, setState] = useState<BotState>(initialState);
   const wsRef = useRef<WebSocket | null>(null);
@@ -181,7 +184,7 @@ export function useBotSocket() {
         break;
 
       case "trade_opened":
-        new Audio(new URL("../ringtone/enrty.mp3", import.meta.url).href).play().catch(() => {});
+        entryAudio.currentTime = 0; entryAudio.play().catch(() => {});
         setState((s) => ({
           ...s,
           positions: {
@@ -192,7 +195,7 @@ export function useBotSocket() {
         break;
 
       case "trade_closed":
-        new Audio(new URL("../ringtone/exit-trade.mp3", import.meta.url).href).play().catch(() => {});
+        exitAudio.currentTime = 0; exitAudio.play().catch(() => {});
         setState((s) => {
           const { [msg.data.pair]: _removed, ...remaining } = s.positions;
           return { ...s, positions: remaining, lastTrade: msg.data };
@@ -200,15 +203,21 @@ export function useBotSocket() {
         break;
 
       case "price_update":
-        // Live price tick every 1s — update just price field in each signal
         setState((s) => {
-          const updatedSignals = { ...s.signals };
-          Object.entries(msg.data as Record<string, number>).forEach(([pair, price]) => {
-            if (updatedSignals[pair]) {
-              updatedSignals[pair] = { ...updatedSignals[pair], price };
+          let changed = false;
+          const entries = Object.entries(msg.data as Record<string, number>);
+          const next: typeof s.signals = {};
+          for (const [pair, sig] of Object.entries(s.signals)) {
+            const newPrice = (msg.data as Record<string, number>)[pair];
+            if (newPrice !== undefined && newPrice !== sig.price) {
+              next[pair] = { ...sig, price: newPrice };
+              changed = true;
+            } else {
+              next[pair] = sig;
             }
-          });
-          return { ...s, signals: updatedSignals };
+          }
+          void entries; // suppress unused warning
+          return changed ? { ...s, signals: next } : s;
         });
         break;
 

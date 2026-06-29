@@ -122,6 +122,11 @@ MAX_LEVERAGE             = 20.0  # hard ceiling — user can never go above this
 DEFAULT_LEVERAGE         = 5.0   # default if user doesn't specify
 MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7
 
+# ─── Quiet Hours (IST) ──────────────────────────────────────
+# No new trade entries during this window. Format: (hour, minute) in IST (UTC+5:30).
+QUIET_HOURS_START = (2, 0)    # 2:00 AM IST
+QUIET_HOURS_END   = (8, 0)    # 8:00 AM IST
+
 # ─── Bot internals ──────────────────────────────────────────
 SIGNAL_BROADCAST_INTERVAL = 2   # seconds between WS broadcasts
 POSITION_CHECK_INTERVAL   = 0.5 # seconds between position monitor ticks

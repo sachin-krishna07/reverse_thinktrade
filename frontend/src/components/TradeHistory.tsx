@@ -80,7 +80,7 @@ export default function TradeHistory({ mode }: Props) {
   const [page, setPage]                     = useState(1);
   const [totalCount, setTotalCount]         = useState(0);
   const [traders, setTraders]               = useState<string[]>([]);
-  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>("Version-2.0");
   const { fmtINR } = useExchangeRate();
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));

@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { useBotSocket } from "@/hooks/useBotSocket";
+import { useBotSocketContext } from "@/hooks/BotSocketContext";
 import { createClient } from "@supabase/supabase-js";
-import AppHeader from "@/components/AppHeader";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -70,15 +69,22 @@ function ChartTooltip({ active, payload, label, fmt }: any) {
 }
 
 export default function Analytics() {
-  const { state } = useBotSocket();
+  const { state } = useBotSocketContext();
   const [mode, setMode]                   = useState<"demo" | "live">("demo");
   const [trades, setTrades]               = useState<Trade[]>([]);
   const [loading, setLoading]             = useState(true);
   const [traders, setTraders]             = useState<string[]>([]);
-  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>("Version-2.0");
   const [equityPeriod, setEquityPeriod]   = useState<string>("All");
   const [hourlyPeriod, setHourlyPeriod]   = useState<string>("All");
+  const [heatmapPeriod, setHeatmapPeriod] = useState<string>("6M");
+  const [dailyVisible, setDailyVisible]   = useState<number>(15);
   const { fmtINR } = useExchangeRate();
+
+  useEffect(() => {
+    const isMobile = window.innerWidth < 640;
+    setHeatmapPeriod(isMobile ? "3M" : "1Y");
+  }, []);
 
   // Auto-sync with bot mode (live/demo) whenever it changes
   useEffect(() => {
@@ -116,7 +122,7 @@ export default function Analytics() {
       .select("pnl, net_pnl, r_multiple, signals_at_entry, pair, direction, exit_reason, created_at, style, signal_score")
       .eq("mode", m).eq("status", "closed")
       .order("created_at", { ascending: true })
-      .limit(10000);
+      .limit(2000);
     if (traderFilter) query = query.eq("trader_name", traderFilter);
     const { data } = await query;
     setTrades((data as Trade[]) || []);
@@ -129,13 +135,13 @@ export default function Analytics() {
   };
 
   useEffect(() => {
-    setSelectedTrader(null);
-    fetchTrades(mode, null);
+    fetchTrades(mode, selectedTrader);
     fetchTraders(mode);
   }, [mode]);
 
   useEffect(() => {
-    const ch = supabase.channel("analytics_watch")
+    const chName = `analytics_watch_${mode}_${selectedTrader ?? "all"}_${Date.now()}`;
+    const ch = supabase.channel(chName)
       .on("postgres_changes", { event: "*", schema: "public", table: "trades", filter: `mode=eq.${mode}` },
         () => { fetchTrades(mode, selectedTrader); fetchTraders(mode); }).subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -429,29 +435,27 @@ export default function Analytics() {
   const zeroPct = equityMax > 0 ? `${Math.min(100, Math.max(0, (equityMax / equityRange) * 100)).toFixed(1)}%` : "0%";
 
   return (
-    <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">
-      <AppHeader />
-      <main className="flex-1 overflow-y-auto bg-[#07090f]">
+    <main className="flex-1 overflow-y-auto bg-[#07090f]">
 
         {/* ── Page Header ─────────────────────────────── */}
         <div className="border-b border-[#1a2030] bg-[#070a10]/80 backdrop-blur-sm sticky top-0 z-10">
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
+          <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
                 <BarChart2 size={15} className="text-indigo-400" />
               </div>
-              <div>
-                <h1 className="text-sm font-bold text-white">Trade Analytics</h1>
-                <p className="text-[10px] text-gray-500">Performance breakdown · signal quality · edge analysis</p>
+              <div className="min-w-0">
+                <h1 className="text-base font-bold text-white leading-tight">Trade Analytics</h1>
+                <p className="text-[10px] text-gray-500 hidden sm:block">Performance breakdown · signal quality · edge analysis</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-shrink-0">
               {traders.length > 1 && (
                 <select
                   value={selectedTrader ?? ""}
                   onChange={(e) => handleTraderSelect(e.target.value || null)}
-                  className="bg-[#0d1117] border border-[#1e2433] text-xs text-gray-300 rounded-lg px-2.5 py-1.5
-                             outline-none focus:border-indigo-500/60 cursor-pointer transition-colors"
+                  className="bg-[#0d1117] border border-[#1e2433] text-xs text-gray-300 rounded-lg px-2 py-1.5
+                             outline-none focus:border-indigo-500/60 cursor-pointer transition-colors max-w-[110px] sm:max-w-none"
                 >
                   <option value="">All Traders</option>
                   {traders.map((t) => (
@@ -462,7 +466,7 @@ export default function Analytics() {
               <div className="flex gap-1 bg-[#0d1117] border border-[#1e2433] rounded-lg p-1">
                 {(["demo", "live"] as const).map(m => (
                   <button key={m} onClick={() => setMode(m)}
-                    className={`px-4 py-1.5 rounded text-xs font-bold transition-all ${
+                    className={`px-3 sm:px-4 py-1.5 rounded text-xs font-bold transition-all ${
                       mode === m
                         ? m === "live"
                           ? "bg-red-500/20 text-red-300 border border-red-500/40"
@@ -492,72 +496,82 @@ export default function Analytics() {
 
             {/* ── KPI Hero Cards ──────────────────────────── */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+
               {/* Total Trades */}
-              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-4 overflow-hidden group hover:border-indigo-500/30 transition-all">
-                <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 to-transparent" />
+              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group hover:border-indigo-500/40 transition-colors duration-300 min-h-[130px]">
+                <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent via-indigo-500/70 to-transparent" />
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500/[0.06] via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center justify-between mb-4">
                     <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Total Trades</span>
-                    <div className="w-7 h-7 rounded-lg bg-indigo-500/15 flex items-center justify-center">
-                      <Zap size={12} className="text-indigo-400" />
+                    <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors duration-300">
+                      <Zap size={14} className="text-indigo-400" />
                     </div>
                   </div>
-                  <div className="text-3xl font-black text-white">{stats.total}</div>
-                  <div className="text-[11px] text-gray-600 mt-1">{stats.wins}W · {stats.total - stats.wins}L</div>
+                  <div className="text-4xl font-black text-white tracking-tight">{stats.total}</div>
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <span className="text-[11px] font-bold text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">{stats.wins}W</span>
+                    <span className="text-gray-700 text-xs">·</span>
+                    <span className="text-[11px] font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">{stats.total - stats.wins}L</span>
+                  </div>
                 </div>
               </div>
 
               {/* Win Rate */}
-              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-4 overflow-hidden hover:border-green-500/30 transition-all">
-                <div className={`absolute inset-0 bg-gradient-to-br ${stats.wr >= 50 ? "from-green-500/5" : "from-red-500/5"} to-transparent`} />
+              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${stats.wr >= 50 ? "hover:border-green-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+                <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${stats.wr >= 50 ? "via-green-500/70" : "via-red-500/70"} to-transparent`} />
+                <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${stats.wr >= 50 ? "from-green-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center justify-between mb-4">
                     <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Win Rate</span>
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${stats.wr >= 50 ? "bg-green-500/15" : "bg-red-500/15"}`}>
-                      <Target size={12} className={stats.wr >= 50 ? "text-green-400" : "text-red-400"} />
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${stats.wr >= 50 ? "bg-green-500/10 border-green-500/20 group-hover:bg-green-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
+                      <Target size={14} className={stats.wr >= 50 ? "text-green-400" : "text-red-400"} />
                     </div>
                   </div>
-                  <div className={`text-3xl font-black ${stats.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{stats.wr}%</div>
-                  <div className="mt-2 h-1.5 bg-[#1a2030] rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full transition-all ${stats.wr >= 50 ? "bg-green-500" : "bg-red-500"}`}
+                  <div className={`text-4xl font-black tracking-tight ${stats.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{stats.wr}%</div>
+                  <div className="mt-3 h-1.5 bg-[#1a2030] rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-700 ${stats.wr >= 50 ? "bg-gradient-to-r from-green-600 to-green-400" : "bg-gradient-to-r from-red-700 to-red-500"}`}
                       style={{ width: `${stats.wr}%` }} />
                   </div>
                 </div>
               </div>
 
               {/* Avg R */}
-              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-4 overflow-hidden hover:border-purple-500/30 transition-all">
-                <div className={`absolute inset-0 bg-gradient-to-br ${stats.ar >= 0 ? "from-purple-500/5" : "from-red-500/5"} to-transparent`} />
+              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${stats.ar >= 0 ? "hover:border-purple-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+                <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${stats.ar >= 0 ? "via-purple-500/70" : "via-red-500/70"} to-transparent`} />
+                <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${stats.ar >= 0 ? "from-purple-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center justify-between mb-4">
                     <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Avg R</span>
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${stats.ar >= 0 ? "bg-purple-500/15" : "bg-red-500/15"}`}>
-                      <TrendingUp size={12} className={stats.ar >= 0 ? "text-purple-400" : "text-red-400"} />
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${stats.ar >= 0 ? "bg-purple-500/10 border-purple-500/20 group-hover:bg-purple-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
+                      <TrendingUp size={14} className={stats.ar >= 0 ? "text-purple-400" : "text-red-400"} />
                     </div>
                   </div>
-                  <div className={`text-3xl font-black ${stats.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
+                  <div className={`text-4xl font-black tracking-tight ${stats.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
                     {stats.ar >= 0 ? "+" : ""}{stats.ar}R
                   </div>
-                  <div className="text-[11px] text-gray-600 mt-1">per trade average</div>
+                  <div className="text-[11px] text-gray-600 mt-2.5">per trade average</div>
                 </div>
               </div>
 
-              {/* Total P&L */}
-              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-4 overflow-hidden hover:border-yellow-500/20 transition-all">
-                <div className={`absolute inset-0 bg-gradient-to-br ${equityUp ? "from-green-500/5" : "from-red-500/5"} to-transparent`} />
+              {/* Net P&L */}
+              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${equityUp ? "hover:border-green-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+                <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${equityUp ? "via-green-500/70" : "via-red-500/70"} to-transparent`} />
+                <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${equityUp ? "from-green-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center justify-between mb-4">
                     <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Net P&L</span>
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${equityUp ? "bg-green-500/15" : "bg-red-500/15"}`}>
-                      {equityUp ? <TrendingUp size={12} className="text-green-400" /> : <TrendingDown size={12} className="text-red-400" />}
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${equityUp ? "bg-green-500/10 border-green-500/20 group-hover:bg-green-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
+                      {equityUp ? <TrendingUp size={14} className="text-green-400" /> : <TrendingDown size={14} className="text-red-400" />}
                     </div>
                   </div>
-                  <div className={`text-2xl font-black ${equityUp ? "text-green-400" : "text-red-400"}`}>
+                  <div className={`text-3xl font-black tracking-tight leading-none ${equityUp ? "text-green-400" : "text-red-400"}`}>
                     {equityUp ? "+" : ""}{fmtINR(stats.totalPnl, 0)}
                   </div>
-                  <div className="text-[11px] text-gray-600 mt-1">after all fees</div>
+                  <div className="text-[11px] text-gray-600 mt-2.5">after all fees</div>
                 </div>
               </div>
+
             </div>
 
             {/* ── Equity Curve ────────────────────────────── */}
@@ -588,7 +602,7 @@ export default function Analytics() {
                 </div>
               </div>
               {/* Chart */}
-              <div className="p-4 h-96">
+              <div className="p-4 h-52 sm:h-72 md:h-96">
                 {filteredEquity.length === 0 ? (
                   <div className="flex items-center justify-center h-full text-gray-600 text-xs">
                     No trades in this period
@@ -630,41 +644,63 @@ export default function Analytics() {
             {/* ── Trade Heatmap ───────────────────────────── */}
             <div className="bg-[#0d1117] border border-[#1e2433] rounded-2xl overflow-hidden relative">
               {/* Header */}
-              <div className="px-5 py-4 border-b border-[#1e2433] flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-[#1e2433] flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
                   <Activity size={14} className="text-indigo-400" />
                   <span className="text-sm font-bold text-white">Daily P&L Heatmap</span>
                 </div>
-                <div className="flex items-center gap-2 text-[11px] text-gray-300 font-medium">
-                  <span>Loss</span>
-                  {["#b91c1c","#ef4444","#1a2035","#16a34a","#4ade80"].map((c,i) => (
-                    <div key={i} className="w-4 h-4 rounded-sm border border-white/5" style={{ backgroundColor: c }} />
-                  ))}
-                  <span>Profit</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Period switcher */}
+                  <div className="flex gap-1 bg-[#080b12] border border-[#1e2433] rounded-lg p-1">
+                    {["1M","3M","6M","1Y","All"].map(p => (
+                      <button key={p} onClick={() => setHeatmapPeriod(p)}
+                        className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${
+                          heatmapPeriod === p
+                            ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
+                            : "text-gray-600 hover:text-gray-400"
+                        }`}>
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Legend */}
+                  <div className="flex items-center gap-1.5 text-[10px] text-gray-500 font-medium">
+                    <span>Loss</span>
+                    {["#b91c1c","#ef4444","#1a2035","#16a34a","#4ade80"].map((c,i) => (
+                      <div key={i} className="w-3 h-3 rounded-sm border border-white/5" style={{ backgroundColor: c }} />
+                    ))}
+                    <span>Profit</span>
+                  </div>
                 </div>
               </div>
 
               {/* Grid */}
-              <div className="px-5 py-4">
+              {(() => {
+                const heatPeriodWeeks: Record<string, number> = { "1M": 5, "3M": 13, "6M": 26, "1Y": 52 };
+                const visibleWeeks = heatmapPeriod === "All"
+                  ? heatmapData.weeks
+                  : heatmapData.weeks.slice(-(heatPeriodWeeks[heatmapPeriod] ?? 52));
+                return (
+              <div className="px-4 py-4 overflow-x-auto">
                 <div className="flex w-full">
                   {/* Day labels */}
-                  <div className="flex flex-col gap-[4px] pr-3 flex-shrink-0" style={{ paddingTop: "24px" }}>
+                  <div className="flex flex-col gap-[3px] pr-2 flex-shrink-0" style={{ paddingTop: "20px" }}>
                     {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d, i) => (
-                      <div key={i} className="text-[11px] text-white font-medium flex items-center" style={{ height: "18px" }}>
+                      <div key={i} className="text-[10px] text-gray-400 font-medium flex items-center" style={{ height: "14px" }}>
                         {d}
                       </div>
                     ))}
                   </div>
 
-                  {/* Weeks — fill full width */}
-                  <div className="flex flex-col gap-[4px] flex-1 min-w-0">
+                  {/* Weeks */}
+                  <div className="flex flex-col gap-[3px] flex-1">
                     {/* Month labels */}
-                    <div className="flex w-full mb-1">
-                      {heatmapData.weeks.map((week, wi) => {
+                    <div className="flex mb-1">
+                      {visibleWeeks.map((week, wi) => {
                         const d = new Date(week[0].date);
                         const show = d.getDate() <= 7;
                         return (
-                          <div key={wi} className="flex-1 text-[11px] text-white font-semibold text-center truncate">
+                          <div key={wi} className="flex-1 text-[10px] text-gray-400 font-semibold text-center truncate">
                             {show ? ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()] : ""}
                           </div>
                         );
@@ -674,13 +710,13 @@ export default function Analytics() {
                     {/* Cells: 7 rows × N weeks */}
                     {[0,1,2,3,4,5,6].map(dayIdx => (
                       <div key={dayIdx} className="flex w-full gap-[3px]">
-                        {heatmapData.weeks.map((week, wi) => {
+                        {visibleWeeks.map((week, wi) => {
                           const cell = week[dayIdx];
                           const color = heatColor(cell.pnl, heatmapData.maxPnl);
                           return (
                             <div key={wi}
-                              className="flex-1 rounded-sm cursor-pointer transition-all hover:ring-2 hover:ring-white/40 hover:z-10 relative"
-                              style={{ backgroundColor: color, height: "18px" }}
+                              className="flex-1 rounded-sm cursor-pointer transition-all hover:ring-1 hover:ring-white/50 hover:z-10"
+                              style={{ backgroundColor: color, height: "13px", minWidth: 0 }}
                               onMouseEnter={e => {
                                 if (cell.pnl !== null) {
                                   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -698,6 +734,8 @@ export default function Analytics() {
                   </div>
                 </div>
               </div>
+                );
+              })()}
 
               {/* Hover popup */}
               {hoveredDay && (
@@ -729,7 +767,7 @@ export default function Analytics() {
 
                 {/* Mobile: cards | Desktop: table */}
                 <div className="block sm:hidden divide-y divide-[#111827]">
-                  {dailyStats.map((d) => {
+                  {dailyStats.slice(0, dailyVisible).map((d) => {
                     const up = d.pnl >= 0;
                     const dow = new Date(d.date).toLocaleDateString("en-IN", { weekday: "short" });
                     const fmtDate = new Date(d.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
@@ -785,7 +823,7 @@ export default function Analytics() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#111827]">
-                      {dailyStats.map((d) => {
+                      {dailyStats.slice(0, dailyVisible).map((d) => {
                         const up = d.pnl >= 0;
                         const dow = new Date(d.date).toLocaleDateString("en-IN", { weekday: "short" });
                         const fmtDate = new Date(d.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
@@ -828,6 +866,21 @@ export default function Analytics() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* See More */}
+                {dailyVisible < dailyStats.length && (
+                  <div className="border-t border-[#111827] px-5 py-3 flex items-center justify-between">
+                    <span className="text-[10px] text-gray-600">
+                      Showing {Math.min(dailyVisible, dailyStats.length)} of {dailyStats.length} days
+                    </span>
+                    <button
+                      onClick={() => setDailyVisible(v => v + 20)}
+                      className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 px-3 py-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/10 transition-all"
+                    >
+                      See 20 more ↓
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1009,11 +1062,11 @@ export default function Analytics() {
                   <div className="text-[10px] text-gray-600 uppercase tracking-wider pt-3 pb-2">Trades per hour</div>
                   {(() => {
                     const maxTotal = Math.max(...hourlyData.map(h => h.total), 1);
-                    const MAX_H = 288; // px
+                    const MAX_H = typeof window !== "undefined" && window.innerWidth < 640 ? 140 : 200;
                     return (
                       <div className="flex items-end gap-[3px]" style={{ height: `${MAX_H}px` }}>
                         {hourlyData.map(h => {
-                          const barH = h.total > 0 ? Math.max(6, Math.round((h.total / maxTotal) * MAX_H)) : 2;
+                          const barH = h.total > 0 ? Math.max(4, Math.round((h.total / maxTotal) * MAX_H)) : 2;
                           return (
                             <div key={h.hour} className="flex-1 flex flex-col justify-end group relative" style={{ height: `${MAX_H}px` }}>
                               <div
@@ -1204,7 +1257,6 @@ export default function Analytics() {
 
           </div>
         )}
-      </main>
-    </div>
+    </main>
   );
 }

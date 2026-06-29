@@ -9,6 +9,8 @@ import History from "./pages/History";
 import Logs from "./pages/Logs";
 import NotFound from "./pages/NotFound";
 import PasswordGate from "./components/PasswordGate";
+import Layout from "./components/Layout";
+import { BotSocketProvider } from "./hooks/BotSocketContext";
 
 const queryClient = new QueryClient();
 
@@ -19,14 +21,16 @@ const App = () => (
       <Sonner />
       <PasswordGate>
         <BrowserRouter>
+          <BotSocketProvider>
           <Routes>
             <Route path="/" element={<Index />} />
-            <Route path="/analytics" element={<Analytics />} />
-            <Route path="/history" element={<History />} />
-            <Route path="/logs" element={<Logs />} />
+            <Route path="/analytics" element={<Layout><Analytics /></Layout>} />
+            <Route path="/history" element={<Layout><History /></Layout>} />
+            <Route path="/logs" element={<Layout><Logs /></Layout>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </BotSocketProvider>
         </BrowserRouter>
       </PasswordGate>
     </TooltipProvider>

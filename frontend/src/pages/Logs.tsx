@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useBotSocket, LogEntry } from "@/hooks/useBotSocket";
-import AppHeader from "@/components/AppHeader";
+import { LogEntry } from "@/hooks/useBotSocket";
+import { useBotSocketContext } from "@/hooks/BotSocketContext";
 import { Search, Trash2, ArrowDown } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_BOT_API_URL || "http://localhost:8000";
@@ -34,7 +34,7 @@ function fmt(ts: number) {
 }
 
 export default function Logs() {
-  const { state } = useBotSocket();
+  const { state } = useBotSocketContext();
   const [localLogs, setLocalLogs] = useState<LogEntry[]>([]);
   const [filterLevel, setFilterLevel] = useState<string>("ALL");
   const [filterName, setFilterName]   = useState<string>("ALL");
@@ -92,15 +92,7 @@ export default function Logs() {
   });
 
   return (
-    <div className="h-screen flex flex-col bg-[#070a10] text-white overflow-hidden">
-      <AppHeader
-        connected={state.connected}
-        running={state.running}
-        mode={state.mode}
-        style={state.style}
-      />
-
-      <div className="flex flex-col flex-1 overflow-hidden p-2 sm:p-4 gap-2 sm:gap-3">
+    <div className="flex flex-col flex-1 overflow-hidden p-2 sm:p-4 gap-2 sm:gap-3">
         {/* Toolbar */}
         <div className="flex flex-col gap-2">
           {/* Row 1: Source + Level + Actions */}
@@ -247,7 +239,6 @@ export default function Logs() {
           )}
           <div ref={bottomRef} />
         </div>
-      </div>
     </div>
   );
 }

@@ -65,12 +65,18 @@ export default function AppHeader({
           )}
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <div className="w-12 h-10 sm:w-16 sm:h-12 rounded-xl overflow-hidden flex items-center justify-center">
-              <img src="/think_trade_logo.png" alt="ThinkTrade" className="w-full h-full object-contain" />
+            <div className="w-16 h-14 sm:w-20 sm:h-16 flex items-center justify-center relative">
+              {/* Glow burst ring */}
+              <span className="absolute inset-0 rounded-full animate-ping"
+                style={{ background: "radial-gradient(circle, rgba(255,255,255,0.18) 0%, transparent 70%)", animationDuration: "2.4s" }} />
+              <span className="absolute inset-0 rounded-full animate-ping"
+                style={{ background: "radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 65%)", animationDuration: "3.2s", animationDelay: "0.8s" }} />
+              <img src="/trade thinker.png" alt="TradeThinker" className="w-full h-full object-contain relative z-10"
+                style={{ filter: "drop-shadow(0 0 8px rgba(255,255,255,0.30)) drop-shadow(0 0 3px rgba(255,255,255,0.18))" }} />
             </div>
             <div className="flex flex-col leading-none">
               <span className="text-white text-base sm:text-xl" style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "-0.01em" }}>
-                ThinkTrade
+                TradeThinker
               </span>
               <span className="text-[9px] sm:text-[10px] font-medium hidden sm:block" style={{ color: "#4f6a9a", letterSpacing: "0.12em" }}>
                 CRYPTO AUTOBOT
