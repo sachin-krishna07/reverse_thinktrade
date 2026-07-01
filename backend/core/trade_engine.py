@@ -15,8 +15,8 @@ import core.supabase_client as db
 
 log = logging.getLogger("trade_engine")
 
-# Binance Futures taker fee: 0.04%
-TAKER_FEE_RATE = 0.04 / 100
+# Binance Futures taker fee: 0.05% (standard, no BNB discount)
+TAKER_FEE_RATE = 0.05 / 100
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 
@@ -175,6 +175,16 @@ class BinanceFutures:
         """Close position with market order"""
         close_side = "SELL" if side == "BUY" else "BUY"
         return await self.place_market_order(symbol, close_side, quantity)
+
+    async def get_recent_trades(self, symbol: str, limit: int = 20) -> list:
+        """Returns recent real account fills for symbol (actual price/qty/fee/realizedPnl)."""
+        try:
+            data = await self._request("GET", "/fapi/v1/userTrades", {
+                "symbol": symbol, "limit": limit
+            }, signed=True)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
 
     async def get_account_balance(self) -> dict:
         """Returns futures + spot USDT balance"""
@@ -757,8 +767,11 @@ class TradeEngine:
             log.info(f"{pair}: SL cooldown started — no re-entry for 20 min")
 
         # ── Live: Close position on Binance ──────────────────
+        real_exit_fee = None
         if self.mode == "live" and self._binance:
-            symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+            symbol     = pair + "USDT" if not pair.endswith("USDT") else pair
+            direction  = pos_snapshot.get("direction", "long")
+            close_side = "SELL" if direction == "long" else "BUY"
             try:
                 await self._binance.cancel_all_orders(symbol)
                 # Guard: only place market close if Binance still holds an open position.
@@ -766,8 +779,6 @@ class TradeEngine:
                 # here would open a new opposite position unintentionally.
                 live_qty = await self._binance.get_position_size(symbol)
                 if live_qty > 0:
-                    direction  = pos_snapshot.get("direction", "long")
-                    close_side = "SELL" if direction == "long" else "BUY"
                     order = await self._binance.place_market_order(symbol, close_side, live_qty)
                     log.info(f"Binance CLOSE order placed: {order.get('orderId')} | {reason}")
                 else:
@@ -775,12 +786,34 @@ class TradeEngine:
             except Exception as e:
                 log.error(f"Binance close order error: {e}", exc_info=True)
 
+            # Reconcile with Binance's real fills — exit_price/pnl above are the bot's own
+            # trigger-price estimate, not the actual filled price. Pull the real closing
+            # fills so DB/dashboard numbers match Binance exactly. Falls back to the
+            # estimate on any failure — never blocks the close.
+            if entry_time:
+                try:
+                    entry_ms      = int(entry_time.timestamp() * 1000)
+                    trades        = await self._binance.get_recent_trades(symbol, limit=20)
+                    closing_fills = [t for t in trades
+                                     if t.get("side") == close_side and int(t.get("time", 0)) >= entry_ms]
+                    fill_qty = sum(float(t["qty"]) for t in closing_fills)
+                    if fill_qty > 0:
+                        exit_price = sum(float(t["price"]) * float(t["qty"]) for t in closing_fills) / fill_qty
+                        pnl        = sum(float(t["realizedPnl"]) for t in closing_fills)
+                        pos_size_usd_snapshot = pos_snapshot.get("position_size_usd", 0)
+                        if pos_size_usd_snapshot:
+                            pnl_pct = pnl / pos_size_usd_snapshot
+                        real_exit_fee = sum(float(t["commission"]) for t in closing_fills
+                                             if t.get("commissionAsset") == "USDT")
+                except Exception as e:
+                    log.warning(f"{pair}: could not reconcile real fill data — using estimate: {e}")
+
         r_multiple = pnl / risk_amount if risk_amount > 0 else 0
         duration   = int((datetime.now(timezone.utc) - entry_time).total_seconds()) if entry_time else 0
 
-        # Fee: entry fee already stored — add exit fee here
+        # Fee: entry fee already stored — add exit fee here (real fee in live mode if available)
         pos_size_usd = pos_snapshot.get("position_size_usd", 0)
-        exit_fee     = pos_size_usd * TAKER_FEE_RATE
+        exit_fee     = real_exit_fee if real_exit_fee is not None else pos_size_usd * TAKER_FEE_RATE
         entry_fee    = pos_snapshot.get("fee", pos_size_usd * TAKER_FEE_RATE)
         total_fee    = round(entry_fee + exit_fee, 4)
         net_pnl      = round(pnl - total_fee, 4)
