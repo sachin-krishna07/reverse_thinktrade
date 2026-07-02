@@ -127,38 +127,64 @@ class BinanceFutures:
         }, signed=True)
 
     async def place_stop_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """Place STOP_MARKET order for SL — closePosition=true closes full position on trigger.
-        Uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
-        quantity param kept for call-site compatibility but NOT sent to Binance —
-        closePosition and quantity/reduceOnly are mutually exclusive on /fapi/v1/order."""
+        """Place STOP_MARKET SL via the Algo Order API — closePosition=true closes the full
+        position on trigger. Uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
+
+        Migrated to POST /fapi/v1/algoOrder (algoType=CONDITIONAL): since 2025-12-09 Binance
+        rejects conditional order types on /fapi/v1/order with error -4120. Note the trigger
+        field is `triggerPrice` here (was `stopPrice` on the legacy endpoint) and a successful
+        response carries `algoId` instead of `orderId`; an error response still carries `code`.
+
+        quantity param kept for call-site compatibility but NOT sent — closePosition and
+        quantity/reduceOnly are mutually exclusive."""
         price_prec = PRICE_PRECISION.get(symbol, 4)
-        return await self._request("POST", "/fapi/v1/order", {
+        return await self._request("POST", "/fapi/v1/algoOrder", {
+            "algoType":      "CONDITIONAL",
             "symbol":        symbol,
             "side":          side,
             "type":          "STOP_MARKET",
-            "stopPrice":     round(stop_price, price_prec),
+            "triggerPrice":  round(stop_price, price_prec),
             "closePosition": "true",
             "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def place_tp_order(self, symbol: str, side: str, quantity: float, tp_price: float) -> dict:
-        """Place TAKE_PROFIT_MARKET order — closePosition=true closes full position on trigger.
-        Uses MARK_PRICE to prevent premature trigger.
+        """Place TAKE_PROFIT_MARKET via the Algo Order API — closePosition=true closes the full
+        position on trigger. Uses MARK_PRICE to prevent premature trigger.
+
+        Migrated to POST /fapi/v1/algoOrder (algoType=CONDITIONAL) — see place_stop_order for the
+        -4120 background. Trigger field is `triggerPrice`; success carries `algoId`.
+
         quantity param kept for call-site compatibility but NOT sent to Binance."""
         price_prec = PRICE_PRECISION.get(symbol, 4)
-        return await self._request("POST", "/fapi/v1/order", {
+        return await self._request("POST", "/fapi/v1/algoOrder", {
+            "algoType":      "CONDITIONAL",
             "symbol":        symbol,
             "side":          side,
             "type":          "TAKE_PROFIT_MARKET",
-            "stopPrice":     round(tp_price, price_prec),
+            "triggerPrice":  round(tp_price, price_prec),
             "closePosition": "true",
             "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def cancel_all_orders(self, symbol: str):
-        return await self._request("DELETE", "/fapi/v1/allOpenOrders", {
+        """Cancel ALL open orders for a symbol — both algo/conditional (SL/TP/trailing) and any
+        regular resting orders. Since the 2025-12-09 migration, conditional orders live on a
+        separate endpoint and are NOT removed by /fapi/v1/allOpenOrders, so both are cancelled
+        to guarantee nothing is left behind (e.g. a stale SL/TP firing after a position closes).
+        Algo cancel returns {"code": 200, ...} on success — 200 here is success, not an error."""
+        # Algo (conditional) orders — SL / TP / trailing. Primary target.
+        algo_res = await self._request("DELETE", "/fapi/v1/algoOpenOrders", {
             "symbol": symbol
         }, signed=True)
+        # Regular resting orders — best-effort; normally none (entry/exit are MARKET).
+        try:
+            await self._request("DELETE", "/fapi/v1/allOpenOrders", {
+                "symbol": symbol
+            }, signed=True)
+        except Exception as e:
+            log.debug(f"{symbol}: regular allOpenOrders cancel skipped/failed (non-fatal): {e}")
+        return algo_res
 
     async def get_position_size(self, symbol: str) -> float:
         """Returns current open position quantity (0 if no position)."""
@@ -245,10 +271,18 @@ class BinanceFutures:
             return []
 
     async def get_open_orders(self, symbol: str) -> list:
-        """Returns all open orders for a symbol — used to find existing SL during reconciliation."""
+        """Returns open algo/conditional orders (SL/TP/trailing) for a symbol — used to find an
+        existing SL during orphan reconciliation. Uses GET /fapi/v1/openAlgoOrders since the
+        2025-12-09 migration; regular /fapi/v1/openOrders no longer returns conditional orders.
+        Note: algo orders expose `orderType` + `triggerPrice` (not `type` + `stopPrice`).
+        Handles both a bare-array response and an {"orders": [...]} wrapper defensively."""
         try:
-            data = await self._request("GET", "/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
-            return data if isinstance(data, list) else []
+            data = await self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("orders", [])
+            return []
         except Exception as e:
             log.error(f"get_open_orders failed for {symbol}: {e}")
             return []
@@ -486,7 +520,7 @@ class TradeEngine:
                 for attempt in range(3):
                     sl_result = await self._binance.place_stop_order(symbol, sl_side, sizing["quantity"], sl_price)
                     if "code" not in sl_result:
-                        log.info(f"Binance SL placed: {sl_result.get('orderId')} @ {sl_price:.6f}")
+                        log.info(f"Binance SL placed: algoId={sl_result.get('algoId')} @ {sl_price:.6f}")
                         sl_placed = True
                         break
                     log.warning(f"{pair}: SL attempt {attempt+1}/3 failed: {sl_result} — retrying...")
@@ -499,7 +533,7 @@ class TradeEngine:
                 if "code" in tp_result:
                     log.warning(f"{pair}: TP order failed: {tp_result}")
                 else:
-                    log.info(f"Binance TP placed: {tp_result.get('orderId')} @ {tp_price:.6f}")
+                    log.info(f"Binance TP placed: algoId={tp_result.get('algoId')} @ {tp_price:.6f}")
 
             except Exception as e:
                 log.error(f"Binance live order error: {e}", exc_info=True)
@@ -710,7 +744,8 @@ class TradeEngine:
 
                 if exit_reason:
                     # SL / breakeven / trailing → exit at sl_price (simulates real SL order).
-                    # max_loss → exit at exact -0.7R price level (simulates stop order, caps slippage).
+                    # max_loss → exit at exact -1.5R price level (backstop when the -1R SL
+                    #            didn't fill, e.g. a gap; caps the recorded slippage at 1.5R).
                     # TP and 2R target → exit at current_price (market fill, no fixed order).
                     if exit_reason in ("sl", "breakeven", "trailing"):
                         exit_p = sl_price
@@ -973,7 +1008,9 @@ class TradeEngine:
                 try:
                     open_orders = await self._binance.get_open_orders(symbol)
                     for order in open_orders:
-                        otype = order.get("type", "")
+                        # Algo orders expose `orderType`/`triggerPrice`; fall back to the legacy
+                        # `type`/`stopPrice` names defensively in case the field shape varies.
+                        otype = order.get("orderType") or order.get("type", "")
                         oside = order.get("side", "")
                         # SL must be on the CLOSING side
                         is_sl_side = (
@@ -981,7 +1018,7 @@ class TradeEngine:
                             (direction == "short" and oside == "BUY")
                         )
                         if otype == "STOP_MARKET" and is_sl_side:
-                            sl_candidate = float(order.get("stopPrice", 0))
+                            sl_candidate = float(order.get("triggerPrice") or order.get("stopPrice", 0))
                             if sl_candidate > 0:
                                 sl_price = sl_candidate
                                 log.info(f"{symbol}: Existing SL found @ {sl_price}")
