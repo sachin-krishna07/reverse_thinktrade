@@ -167,6 +167,44 @@ class BinanceFutures:
             "workingType":   "MARK_PRICE",
         }, signed=True)
 
+    async def place_trailing_stop_order(self, symbol: str, side: str, quantity: float,
+                                         callback_rate: float) -> dict:
+        """Place TRAILING_STOP_MARKET via the Algo Order API. Binance's own engine tracks the
+        best (favorable) price continuously and closes once price reverses callback_rate% from
+        it — no bot-side polling/cancel-replace needed in between, unlike STOP_MARKET.
+
+        Unlike place_stop_order/place_tp_order, closePosition is NOT supported for this type —
+        an explicit quantity + reduceOnly is required instead.
+
+        activatePrice is deliberately omitted: Binance requires SELL orders to activate above
+        the latest price and BUY orders below it (rejected otherwise), and passing the current
+        price at placement time would violate that on either side. Omitting it lets Binance
+        default to "the latest price", which satisfies its own constraint automatically."""
+        precision = SYMBOL_PRECISION.get(symbol, 3)
+        return await self._request("POST", "/fapi/v1/algoOrder", {
+            "algoType":     "CONDITIONAL",
+            "symbol":       symbol,
+            "side":         side,
+            "type":         "TRAILING_STOP_MARKET",
+            "quantity":     round(quantity, precision),
+            "reduceOnly":   "true",
+            "callbackRate": round(callback_rate, 2),
+            "workingType":  "MARK_PRICE",
+        }, signed=True)
+
+    async def get_open_algo_orders(self, symbol: str) -> list:
+        """Health-check: list currently open algo (conditional) orders for a symbol — used to
+        verify a placed trailing stop is still live on Binance's side. If it's unexpectedly
+        missing while the position is still open, the caller falls back to a plain SL.
+
+        Response is a bare array of order objects; each order's type is under "orderType"
+        (not "type") — confirmed against Binance's Current-All-Algo-Open-Orders schema."""
+        try:
+            data = await self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
     async def cancel_all_orders(self, symbol: str):
         """Cancel ALL open orders for a symbol — both algo/conditional (SL/TP/trailing) and any
         regular resting orders. Since the 2025-12-09 migration, conditional orders live on a
@@ -604,20 +642,21 @@ class TradeEngine:
         trail_step     = 0        # index of next TRAIL_STEPS to check
         profit_locked  = False    # True once any profit is locked (0.3R+)
         trailing_sl    = sl_price
+        last_gap_r     = None     # gap (trigger_R - lock_R) of the trail step that just fired
+        trailing_fallback_active = False  # True once the health-check falls back to plain SL
+                                           # after Binance's native trailing order goes missing
 
         # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
-        # 1.0R → lock 0.75R immediately (no breakeven wait)
-        # Steps every ~0.3R, gap 0.25-0.30R throughout
+        # 1.1R → lock 0.8R immediately (no breakeven wait)
+        # 2026-07-04: shifted +0.1R on trigger, +0.05R on lock vs previous ladder —
+        # gives trades a bit more room before locking, gap now 0.30-0.35R.
+        # Steps beyond 1.9R removed — 2R hard exit (below) fires first, so a
+        # 2.2R+ trigger would never be reached.
         TRAIL_STEPS = [
-            (1.00, 0.75),   # 1.0R → lock 0.75R (gap: 0.25R)
-            (1.30, 1.00),   # 1.3R → lock 1.0R  (gap: 0.30R)
-            (1.50, 1.20),   # 1.5R → lock 1.2R  (gap: 0.30R)
-            (1.80, 1.50),   # 1.8R → lock 1.5R  (gap: 0.30R)
-            (2.10, 1.80),   # 2.1R → lock 1.8R  (gap: 0.30R)
-            (2.50, 2.20),   # 2.5R → lock 2.2R  (gap: 0.30R)
-            (3.00, 2.70),   # 3.0R → lock 2.7R  (gap: 0.30R)
-            (3.50, 3.20),   # 3.5R → lock 3.2R  (gap: 0.30R)
-            (4.00, 3.70),   # 4.0R → lock 3.7R  (gap: 0.30R)
+            (1.10, 0.80),   # 1.1R → lock 0.8R  (gap: 0.30R)
+            (1.40, 1.05),   # 1.4R → lock 1.05R (gap: 0.35R)
+            (1.60, 1.25),   # 1.6R → lock 1.25R (gap: 0.35R)
+            (1.90, 1.55),   # 1.9R → lock 1.55R (gap: 0.35R)
         ]
 
 
@@ -663,6 +702,7 @@ class TradeEngine:
                             sl_price    = new_sl
                             trailing_sl = sl_price
                             sl_updated  = True
+                            last_gap_r  = trigger_r - lock_r
                             log.info(f"{pair} {trigger_r}R hit — SL → +{lock_r}R ({sl_price:.6f})")
                         if lock_r > 0:
                             profit_locked = True
@@ -671,17 +711,59 @@ class TradeEngine:
                         break  # steps are ordered, no need to check further
 
                 # ── Live: Update SL on Binance when trailing SL moves ──
+                # Once the first trail step fires (trail_step >= 1), switch from a plain
+                # STOP_MARKET to Binance's own TRAILING_STOP_MARKET — its engine tracks the
+                # peak price continuously and closes on its own, no more per-tick cancel/replace
+                # needed until the next R-milestone tightens the callback. If the health-check
+                # below ever finds this order missing, trailing_fallback_active locks us back
+                # onto plain STOP_MARKET for the rest of the trade (proven, safe baseline).
                 if sl_updated and self.mode == "live" and self._binance:
-                    symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+                    symbol   = pair + "USDT" if not pair.endswith("USDT") else pair
                     quantity = pos_snapshot.get("quantity", 0)
-                    sl_side = "SELL" if direction == "long" else "BUY"
+                    sl_side  = "SELL" if direction == "long" else "BUY"
                     try:
                         await self._binance.cancel_all_orders(symbol)
-                        await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
-                        await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
-                        log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
+                        if trail_step >= 1 and not trailing_fallback_active:
+                            callback_rate = max(0.1, min(10.0,
+                                last_gap_r * (risk_amount / pos_size_usd) * 100))
+                            await self._binance.place_trailing_stop_order(
+                                symbol, sl_side, quantity, callback_rate
+                            )
+                            log.info(f"{pair} Binance trailing stop set — callback="
+                                     f"{callback_rate:.2f}% (gap {last_gap_r}R)")
+                        else:
+                            await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
+                            await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
+                            log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
                     except Exception as e:
-                        log.error(f"{pair} Failed to update Binance SL: {e}")
+                        log.error(f"{pair} Failed to update Binance SL/trailing: {e}")
+
+                # ── Live: periodic health-check on Binance-native trailing ──
+                # Verifies the trailing order is still alive on Binance's side. If it's missing
+                # while the position is still open, falls back to a plain SL immediately so the
+                # position is never left unprotected. If the position is already closed (size 0),
+                # trailing fired on its own — reconcile it as a normal exit below.
+                binance_closed_via_trailing = False
+                if (trail_step >= 1 and not trailing_fallback_active
+                        and self.mode == "live" and self._binance
+                        and int(elapsed * 2) % 10 == 0):
+                    symbol = pair + "USDT" if not pair.endswith("USDT") else pair
+                    try:
+                        live_qty = await self._binance.get_position_size(symbol)
+                        if live_qty <= 0:
+                            binance_closed_via_trailing = True
+                        else:
+                            open_algo = await self._binance.get_open_algo_orders(symbol)
+                            has_trailing = any(o.get("orderType") == "TRAILING_STOP_MARKET" for o in open_algo)
+                            if not has_trailing:
+                                quantity = pos_snapshot.get("quantity", 0)
+                                sl_side  = "SELL" if direction == "long" else "BUY"
+                                await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
+                                trailing_fallback_active = True
+                                log.warning(f"{pair}: Binance trailing order missing — emergency "
+                                            f"fallback SL placed @ {sl_price:.6f}")
+                    except Exception as e:
+                        log.error(f"{pair} trailing health-check failed: {e}")
 
                 # Update position in DB (every 5 checks to reduce writes)
                 breakeven_hit = trail_step > 0   # at least 0.3R step triggered
@@ -725,12 +807,21 @@ class TradeEngine:
                 # ── Exit conditions ──────────────────────────────
                 exit_reason = None
 
-                # 4R → hard exit (profit booked)
-                if r_current >= 4.0:
+                # 2R → hard exit (profit booked)
+                if r_current >= 2.0:
                     exit_reason = "2r_target"
                 # Early stop — exit at -1.5R if no trailing step has triggered yet
                 elif r_current <= -1.5 and trail_step == 0:
                     exit_reason = "max_loss"
+                # Binance's native TRAILING_STOP_MARKET closed the position on its own —
+                # reconcile using its real fill data (handled in _close_position for live mode).
+                elif binance_closed_via_trailing:
+                    exit_reason = "trailing"
+                # Binance-native trailing is live and authoritative once engaged — don't use
+                # our own stale ladder sl_price to trigger an exit here, it lags Binance's
+                # continuously-updated peak-tracking level. Only the checks above apply.
+                elif trail_step >= 1 and not trailing_fallback_active and self.mode == "live":
+                    pass
                 elif direction == "long":
                     if current_price <= sl_price:
                         exit_reason = "sl" if trail_step == 0 else "trailing"
