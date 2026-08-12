@@ -8,14 +8,16 @@ from urllib.parse import urlencode
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Any
 
-from config import SCALPING, SWING, POSITION_CHECK_INTERVAL, BINANCE_API_KEY, BINANCE_SECRET_KEY
+from config import (SCALPING, SWING, POSITION_CHECK_INTERVAL, BINANCE_API_KEY,
+                    BINANCE_SECRET_KEY, style_cfg)
 from core.signal_engine import SignalResult
 from core.risk_manager import RiskManager
+from core.adaptive_filter import AdaptiveFilter
 import core.supabase_client as db
 
 log = logging.getLogger("trade_engine")
 
-# Binance Futures taker fee: 0.05% (standard, no BNB discount)
+# Binance Futures taker fee: 0.05% per side (raised from 0.04% on 2026-07-03)
 TAKER_FEE_RATE = 0.05 / 100
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
@@ -55,6 +57,15 @@ PRICE_PRECISION = {
     "TAOUSDT": 2, "ONDOUSDT": 4, "ENAUSDT": 4, "FETUSDT": 4,
     "WLDUSDT": 4, "BONKUSDT": 7, "BCHUSDT": 2, "POLUSDT": 4,
 }
+
+
+def get_price_precision(symbol: str) -> int:
+    """Shared lookup for SL/TP price rounding. PRICE_PRECISION is populated from
+    Binance's real tick sizes at bot startup (see TradeEngine.sync_live_balance) —
+    the hardcoded table above and the `4` fallback here are last-resort only.
+    A flat 4-decimal fallback badly distorts SL/TP for sub-cent tokens (confirmed
+    bug on ALT/PENGU/SKL — 0.0001 tick was coarser than the intended R-distance)."""
+    return PRICE_PRECISION.get(symbol, 4)
 
 
 class BinanceFutures:
@@ -127,102 +138,38 @@ class BinanceFutures:
         }, signed=True)
 
     async def place_stop_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """Place STOP_MARKET SL via the Algo Order API — closePosition=true closes the full
-        position on trigger. Uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
-
-        Migrated to POST /fapi/v1/algoOrder (algoType=CONDITIONAL): since 2025-12-09 Binance
-        rejects conditional order types on /fapi/v1/order with error -4120. Note the trigger
-        field is `triggerPrice` here (was `stopPrice` on the legacy endpoint) and a successful
-        response carries `algoId` instead of `orderId`; an error response still carries `code`.
-
-        quantity param kept for call-site compatibility but NOT sent — closePosition and
-        quantity/reduceOnly are mutually exclusive."""
-        price_prec = PRICE_PRECISION.get(symbol, 4)
-        return await self._request("POST", "/fapi/v1/algoOrder", {
-            "algoType":      "CONDITIONAL",
+        """Place STOP_MARKET order for SL — closePosition=true closes full position on trigger.
+        Uses MARK_PRICE to prevent immediate trigger on spreads/spikes.
+        quantity param kept for call-site compatibility but NOT sent to Binance —
+        closePosition and quantity/reduceOnly are mutually exclusive on /fapi/v1/order."""
+        price_prec = get_price_precision(symbol)
+        return await self._request("POST", "/fapi/v1/order", {
             "symbol":        symbol,
             "side":          side,
             "type":          "STOP_MARKET",
-            "triggerPrice":  round(stop_price, price_prec),
+            "stopPrice":     round(stop_price, price_prec),
             "closePosition": "true",
             "workingType":   "MARK_PRICE",
         }, signed=True)
 
     async def place_tp_order(self, symbol: str, side: str, quantity: float, tp_price: float) -> dict:
-        """Place TAKE_PROFIT_MARKET via the Algo Order API — closePosition=true closes the full
-        position on trigger. Uses MARK_PRICE to prevent premature trigger.
-
-        Migrated to POST /fapi/v1/algoOrder (algoType=CONDITIONAL) — see place_stop_order for the
-        -4120 background. Trigger field is `triggerPrice`; success carries `algoId`.
-
+        """Place TAKE_PROFIT_MARKET order — closePosition=true closes full position on trigger.
+        Uses MARK_PRICE to prevent premature trigger.
         quantity param kept for call-site compatibility but NOT sent to Binance."""
-        price_prec = PRICE_PRECISION.get(symbol, 4)
-        return await self._request("POST", "/fapi/v1/algoOrder", {
-            "algoType":      "CONDITIONAL",
+        price_prec = get_price_precision(symbol)
+        return await self._request("POST", "/fapi/v1/order", {
             "symbol":        symbol,
             "side":          side,
             "type":          "TAKE_PROFIT_MARKET",
-            "triggerPrice":  round(tp_price, price_prec),
+            "stopPrice":     round(tp_price, price_prec),
             "closePosition": "true",
             "workingType":   "MARK_PRICE",
         }, signed=True)
 
-    async def place_trailing_stop_order(self, symbol: str, side: str, quantity: float,
-                                         callback_rate: float) -> dict:
-        """Place TRAILING_STOP_MARKET via the Algo Order API. Binance's own engine tracks the
-        best (favorable) price continuously and closes once price reverses callback_rate% from
-        it — no bot-side polling/cancel-replace needed in between, unlike STOP_MARKET.
-
-        Unlike place_stop_order/place_tp_order, closePosition is NOT supported for this type —
-        an explicit quantity + reduceOnly is required instead.
-
-        activatePrice is deliberately omitted: Binance requires SELL orders to activate above
-        the latest price and BUY orders below it (rejected otherwise), and passing the current
-        price at placement time would violate that on either side. Omitting it lets Binance
-        default to "the latest price", which satisfies its own constraint automatically."""
-        precision = SYMBOL_PRECISION.get(symbol, 3)
-        return await self._request("POST", "/fapi/v1/algoOrder", {
-            "algoType":     "CONDITIONAL",
-            "symbol":       symbol,
-            "side":         side,
-            "type":         "TRAILING_STOP_MARKET",
-            "quantity":     round(quantity, precision),
-            "reduceOnly":   "true",
-            "callbackRate": round(callback_rate, 2),
-            "workingType":  "MARK_PRICE",
-        }, signed=True)
-
-    async def get_open_algo_orders(self, symbol: str) -> list:
-        """Health-check: list currently open algo (conditional) orders for a symbol — used to
-        verify a placed trailing stop is still live on Binance's side. If it's unexpectedly
-        missing while the position is still open, the caller falls back to a plain SL.
-
-        Response is a bare array of order objects; each order's type is under "orderType"
-        (not "type") — confirmed against Binance's Current-All-Algo-Open-Orders schema."""
-        try:
-            data = await self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True)
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-
     async def cancel_all_orders(self, symbol: str):
-        """Cancel ALL open orders for a symbol — both algo/conditional (SL/TP/trailing) and any
-        regular resting orders. Since the 2025-12-09 migration, conditional orders live on a
-        separate endpoint and are NOT removed by /fapi/v1/allOpenOrders, so both are cancelled
-        to guarantee nothing is left behind (e.g. a stale SL/TP firing after a position closes).
-        Algo cancel returns {"code": 200, ...} on success — 200 here is success, not an error."""
-        # Algo (conditional) orders — SL / TP / trailing. Primary target.
-        algo_res = await self._request("DELETE", "/fapi/v1/algoOpenOrders", {
+        return await self._request("DELETE", "/fapi/v1/allOpenOrders", {
             "symbol": symbol
         }, signed=True)
-        # Regular resting orders — best-effort; normally none (entry/exit are MARKET).
-        try:
-            await self._request("DELETE", "/fapi/v1/allOpenOrders", {
-                "symbol": symbol
-            }, signed=True)
-        except Exception as e:
-            log.debug(f"{symbol}: regular allOpenOrders cancel skipped/failed (non-fatal): {e}")
-        return algo_res
 
     async def get_position_size(self, symbol: str) -> float:
         """Returns current open position quantity (0 if no position)."""
@@ -239,16 +186,6 @@ class BinanceFutures:
         """Close position with market order"""
         close_side = "SELL" if side == "BUY" else "BUY"
         return await self.place_market_order(symbol, close_side, quantity)
-
-    async def get_recent_trades(self, symbol: str, limit: int = 20) -> list:
-        """Returns recent real account fills for symbol (actual price/qty/fee/realizedPnl)."""
-        try:
-            data = await self._request("GET", "/fapi/v1/userTrades", {
-                "symbol": symbol, "limit": limit
-            }, signed=True)
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
 
     async def get_account_balance(self) -> dict:
         """Returns futures + spot USDT balance"""
@@ -309,30 +246,28 @@ class BinanceFutures:
             return []
 
     async def get_open_orders(self, symbol: str) -> list:
-        """Returns open algo/conditional orders (SL/TP/trailing) for a symbol — used to find an
-        existing SL during orphan reconciliation. Uses GET /fapi/v1/openAlgoOrders since the
-        2025-12-09 migration; regular /fapi/v1/openOrders no longer returns conditional orders.
-        Note: algo orders expose `orderType` + `triggerPrice` (not `type` + `stopPrice`).
-        Handles both a bare-array response and an {"orders": [...]} wrapper defensively."""
+        """Returns all open orders for a symbol — used to find existing SL during reconciliation."""
         try:
-            data = await self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True)
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get("orders", [])
-            return []
+            data = await self._request("GET", "/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+            return data if isinstance(data, list) else []
         except Exception as e:
             log.error(f"get_open_orders failed for {symbol}: {e}")
             return []
 
 
 class TradeEngine:
-    def __init__(self, risk: RiskManager, on_update: Callable, mode: str = "demo", leverage: float = 5.0, trader_name: str = "Unknown"):
+    def __init__(self, risk: RiskManager, on_update: Callable, mode: str = "demo", leverage: float = 5.0,
+                 trader_name: str = "Unknown", reverse_direction: bool = False):
         self.risk        = risk
         self.on_update   = on_update
         self.mode        = mode
         self.leverage    = leverage
         self.trader_name = trader_name
+        # Trade the opposite of the signal engine's direction. Set per-run from the
+        # frontend "Reverse Direction" toggle (see bot_controller.start()) — this is
+        # separate from the 2026-07 reverse-execution experiment that was tried and
+        # reverted in code; this is a user-controlled runtime switch, not a default.
+        self.reverse_direction = reverse_direction
 
         # Binance Futures client (only used in live mode)
         self._binance: Optional[BinanceFutures] = None
@@ -364,6 +299,11 @@ class TradeEngine:
         self._entry_fail_cooldown: Dict[str, float] = {}
         self._entry_fail_cooldown_secs: int = 5 * 60  # 5 minutes
 
+        # Adaptive per-pair filter — learns from this bot's own closed trades and
+        # stops entering pairs whose recent net-R mean is negative. Warm-started
+        # from the DB in warm_start_adaptive() so a restart doesn't wipe learning.
+        self.adaptive = AdaptiveFilter()
+
         # Per-pair entry lock — prevents double entry during Binance order placement.
         # SL retry can take 1-3s while signal loop fires every 2s, creating a race window
         # where _open dict doesn't have the pair yet → second enter() fires on Binance.
@@ -386,26 +326,39 @@ class TradeEngine:
         log.info(f"Wallet loaded: ${self._balance:.2f} ({self.mode})")
 
     async def sync_live_balance(self):
-        """Live mode: sync actual Binance futures balance + precision into _balance."""
-        if self.mode != "live" or not self._binance:
-            return
-        try:
-            bal = await self._binance.get_account_balance()
-            binance_bal = bal.get("futures_usdt", 0)
-            if binance_bal > 0:
-                self._balance         = binance_bal
-                self._initial_balance = binance_bal
-                log.info(f"Live balance synced from Binance: ${binance_bal:.2f}")
-        except Exception as e:
-            log.warning(f"Binance balance sync failed: {e}")
+        """Live mode: sync actual Binance futures balance into _balance."""
+        if self.mode == "live" and self._binance:
+            try:
+                bal = await self._binance.get_account_balance()
+                binance_bal = bal.get("futures_usdt", 0)
+                if binance_bal > 0:
+                    self._balance         = binance_bal
+                    self._initial_balance = binance_bal
+                    log.info(f"Live balance synced from Binance: ${binance_bal:.2f}")
+            except Exception as e:
+                log.warning(f"Binance balance sync failed: {e}")
 
-        # Auto-fetch precision from Binance — overrides hardcoded fallback
+        # Fetch real tick precision from Binance's public exchangeInfo — runs in
+        # every mode (demo included), no API key needed. Without this, symbols
+        # missing from the hardcoded PRICE_PRECISION table fall back to 4 decimals,
+        # which badly distorts SL/TP for sub-cent tokens (confirmed bug: ALT,
+        # PENGU, SKL all ran far past their intended SL/TP R-multiple because a
+        # 0.0001 tick was coarser than the intended stop distance). Merged into
+        # the global dicts here, at startup, before any trade rounds a price —
+        # not lazily per-symbol on first trade.
+        precision_client = self._binance or BinanceFutures("", "")
         try:
-            prec = await self._binance.fetch_precision()
+            prec = await precision_client.fetch_precision()
             self._qty_prec   = prec["qty"]
             self._price_prec = prec["price"]
+            SYMBOL_PRECISION.update(self._qty_prec)
+            PRICE_PRECISION.update(self._price_prec)
+            log.info(
+                f"Price/qty precision merged for {len(self._price_prec)} symbols "
+                f"(mode={self.mode})"
+            )
         except Exception as e:
-            log.warning(f"Precision fetch failed: {e}")
+            log.warning(f"Precision fetch failed — using hardcoded fallback: {e}")
 
     # ─── Enter Trade ────────────────────────────────────────
 
@@ -430,7 +383,7 @@ class TradeEngine:
     async def _enter_inner(self, pair: str, style: str,
                            signal: SignalResult, capital_pct: float,
                            signal_score: int = 4) -> bool:
-        cfg = SCALPING if style == "scalping" else SWING
+        cfg = style_cfg(style)
 
         log.info(f"Attempting entry: {pair} | score={signal.total_score} | dir={signal.signal_direction}")
 
@@ -450,6 +403,14 @@ class TradeEngine:
                 log.info(f"{pair}: blocked by failed-entry cooldown — {int(remaining/60)}m {int(remaining%60)}s remaining")
                 return False
 
+        # Adaptive per-pair filter — skip pairs whose own recent closed trades
+        # have a negative mean net-R. Checked here (not earlier) so the cheap
+        # cooldown checks still short-circuit first.
+        adaptive_ok, adaptive_reason = self.adaptive.allows(pair)
+        if not adaptive_ok:
+            log.info(f"{pair}: blocked by adaptive filter — {adaptive_reason}")
+            return False
+
         wallet = await asyncio.to_thread(db.get_wallet, self.mode)
         if not wallet:
             log.error(f"Wallet not found for mode={self.mode} — run supabase_schema.sql in Supabase SQL Editor!")
@@ -462,7 +423,15 @@ class TradeEngine:
 
         entry_price = signal.current_price
         if entry_price <= 0:
-            log.warning(f"Entry blocked — price is 0 for {pair}")
+            # A pair can have enough REST-fetched candles for is_ready()/the signal
+            # to fire while its live WS stream has never delivered a tick, leaving
+            # last_price at 0. Without a cooldown this retries every scan cycle
+            # forever (~2s), spamming logs and the DB — observed on MMT with the
+            # signal re-firing indefinitely. Cool it down like any other failed entry.
+            self._entry_fail_cooldown[pair] = time.time()
+            log.warning(f"Entry blocked — no live price for {pair} yet "
+                        f"(WS tick not received); pausing entries "
+                        f"{self._entry_fail_cooldown_secs // 60}m")
             return False
 
         sizing = self.risk.calculate_position(
@@ -471,25 +440,68 @@ class TradeEngine:
             user_leverage=self.leverage
         )
 
+        # Trade the signal engine's own direction (no reversal). The 2026-07-10 flip
+        # was removed 2026-07-17 per user request.
         direction = signal.signal_direction
+        if self.reverse_direction:
+            direction = "short" if direction == "long" else "long"
         sl_dist   = sizing["sl_distance"]
-        tp_dist   = sl_dist * (cfg["atr_tp_mult"] / cfg["atr_sl_mult"])
+
+        # Actual SL is placed tighter than the full 1R distance (risk_amount stays
+        # anchored to sl_dist, so an SL-out reports sl_entry_r, e.g. -0.75R, not -1.00R).
+        sl_entry_dist = sl_dist * cfg.get("sl_entry_r", 1.0)
+
+        # TP is independent of SL (changed 2026-07-14 per user request — was previously
+        # forced 1:1 with sl_entry_dist).
+        # tp_entry_r may be None: no hard target, trailing is the only profit
+        # exit. A far-away placeholder TP is still placed on Binance so the
+        # exchange-side bracket exists, but the monitor's trailing logic will close
+        # long before it — see _monitor_position.
+        tp_r_cfg = cfg.get("tp_entry_r", cfg.get("sl_entry_r", 1.0))
+        has_hard_tp = tp_r_cfg is not None
+        tp_dist = sl_dist * (tp_r_cfg if has_hard_tp else 20.0)
 
         if direction == "long":
-            sl_price = entry_price - sl_dist
+            sl_price = entry_price - sl_entry_dist
             tp_price = entry_price + tp_dist
         else:
-            sl_price = entry_price + sl_dist
+            sl_price = entry_price + sl_entry_dist
             tp_price = entry_price - tp_dist
 
-        # Entry fee (taker 0.05% + 18% GST) on position size
+        # Round to the exchange's actual tradable price tick — without this, TP/SL
+        # sit at a theoretical price the market can never exactly reach (only display-
+        # rounds to look equal), so the monitor's >=/<= check never fires and the
+        # position rides past target instead of closing.
+        symbol_prec = pair + "USDT" if not pair.endswith("USDT") else pair
+        price_prec  = get_price_precision(symbol_prec)
+        sl_price    = round(sl_price, price_prec)
+        tp_price    = round(tp_price, price_prec)
+
+        # Entry fee (taker 0.05%) on position size
         entry_fee    = sizing["position_size_usd"] * TAKER_FEE_RATE
         total_fee_est = entry_fee * 2  # entry + exit
 
-        # Gate: risk must be at least 3× total fee
-        if sizing["risk_amount"] < total_fee_est * 3.0:
+        # Gate: risk must be at least 4× total fee (lowered from 5× on
+        # 2026-08-12 per user request — lets more entries through in quiet,
+        # low-ATR conditions; effective floor is now SL >= 0.4% of price
+        # instead of 0.5%).
+        #
+        # NOTE — this contradicts the 2026-07-17 tuning it replaces: a
+        # last-5-days sweep (365 trades) found the ratio 3-5 band (fee ~20-33%
+        # of R) was net -$11k while ratio>=5 was net +$13.7k, and 5x beat both
+        # 4x and 6x on net. Re-run that sweep on fresh trade history before
+        # keeping 4x long-term.
+        if sizing["risk_amount"] < total_fee_est * 4.0:
             log.info(f"{pair}: skipped — risk ₹{sizing['risk_amount']:.1f} too small vs fee ₹{total_fee_est:.1f}")
+            # Same setup will fail this exact check every scan cycle until the
+            # signal itself changes — cooldown it so it doesn't spam-retry.
+            self._entry_fail_cooldown[pair] = time.time()
             return False
+
+        # Shadow trade: SL is wider than MAX_SL_PCT of the position. Recorded in
+        # full so the setup can be studied later, but it must not touch real
+        # money or any counter the live strategy depends on.
+        is_shadow = sizing.get("is_shadow", False)
 
         trade_data = {
             "mode":              self.mode,
@@ -509,6 +521,7 @@ class TradeEngine:
             "fee":               round(entry_fee, 4),
             "signal_score":      signal_score,
             "trader_name":       self.trader_name,
+            "is_shadow":         is_shadow,
         }
 
         trade_id = await asyncio.to_thread(db.open_trade, trade_data)
@@ -517,13 +530,11 @@ class TradeEngine:
             return False
 
         # ── Live: Place actual Binance Futures order ──────────
-        if self.mode == "live" and self._binance:
+        # Shadow trades never reach the exchange. Their PnL is excluded from the
+        # wallet, so placing a real order would put money at risk that nothing
+        # accounts for — the one combination that must never happen.
+        if self.mode == "live" and self._binance and not is_shadow:
             symbol = pair + "USDT" if not pair.endswith("USDT") else pair
-
-            # Use Binance-fetched precision if available, else hardcoded fallback
-            if self._qty_prec:
-                SYMBOL_PRECISION[symbol]  = self._qty_prec.get(symbol,  SYMBOL_PRECISION.get(symbol, 2))
-                PRICE_PRECISION[symbol]   = self._price_prec.get(symbol, PRICE_PRECISION.get(symbol, 4))
 
             try:
                 # Set leverage
@@ -545,10 +556,10 @@ class TradeEngine:
                 if actual_fill > 0 and actual_fill != entry_price:
                     log.info(f"{pair}: Fill adjusted {entry_price:.6f} → {actual_fill:.6f} — recalculating SL/TP")
                     if direction == "long":
-                        sl_price = actual_fill - sl_dist
+                        sl_price = actual_fill - sl_entry_dist
                         tp_price = actual_fill + tp_dist
                     else:
-                        sl_price = actual_fill + sl_dist
+                        sl_price = actual_fill + sl_entry_dist
                         tp_price = actual_fill - tp_dist
                     entry_price = actual_fill
 
@@ -558,7 +569,7 @@ class TradeEngine:
                 for attempt in range(3):
                     sl_result = await self._binance.place_stop_order(symbol, sl_side, sizing["quantity"], sl_price)
                     if "code" not in sl_result:
-                        log.info(f"Binance SL placed: algoId={sl_result.get('algoId')} @ {sl_price:.6f}")
+                        log.info(f"Binance SL placed: {sl_result.get('orderId')} @ {sl_price:.6f}")
                         sl_placed = True
                         break
                     log.warning(f"{pair}: SL attempt {attempt+1}/3 failed: {sl_result} — retrying...")
@@ -571,7 +582,7 @@ class TradeEngine:
                 if "code" in tp_result:
                     log.warning(f"{pair}: TP order failed: {tp_result}")
                 else:
-                    log.info(f"Binance TP placed: algoId={tp_result.get('algoId')} @ {tp_price:.6f}")
+                    log.info(f"Binance TP placed: {tp_result.get('orderId')} @ {tp_price:.6f}")
 
             except Exception as e:
                 log.error(f"Binance live order error: {e}", exc_info=True)
@@ -608,8 +619,10 @@ class TradeEngine:
             self._open[pair] = []
         self._open[pair].append(entry)
 
-        log.info(f"TRADE OPENED: {direction.upper()} {pair} @ {entry_price:.4f} | "
-                 f"SL:{sl_price:.4f} TP:{tp_price:.4f} | ${sizing['risk_amount']:.2f} risk")
+        log.info(f"{'👻 SHADOW OPENED' if is_shadow else 'TRADE OPENED'}: "
+                 f"{direction.upper()} {pair} @ {entry_price:.4f} | "
+                 f"SL:{sl_price:.4f} ({sizing['sl_distance_pct']*100:.2f}%) "
+                 f"TP:{tp_price:.4f} | ${sizing['risk_amount']:.2f} risk")
 
         await self.on_update({
             "type": "trade_opened",
@@ -621,6 +634,7 @@ class TradeEngine:
                 "tp":        tp_price,
                 "size_usd":  sizing["position_size_usd"],
                 "risk_usd":  sizing["risk_amount"],
+                "is_shadow": is_shadow,
             }
         })
         return True
@@ -637,34 +651,21 @@ class TradeEngine:
         risk_amount  = pos_snapshot["risk_amount"]
         entry_time   = datetime.now(timezone.utc)
 
-        initial_sl_dist = abs(entry_price - sl_price)
-        highest_pnl    = 0.0
-        trail_step     = 0        # index of next TRAIL_STEPS to check
-        profit_locked  = False    # True once any profit is locked (0.3R+)
-        trailing_sl    = sl_price
-        last_gap_r     = None     # gap (trigger_R - lock_R) of the trail step that just fired
-        trailing_fallback_active = False  # True once the health-check falls back to plain SL
-                                           # after Binance's native trailing order goes missing
+        # R-multiple exit thresholds — same lookup used at entry (see enter(),
+        # sl_entry_dist/tp_dist), so the monitor's trigger always matches what
+        # was actually intended for this trade.
+        sl_r = cfg.get("sl_entry_r", 1.0)
+        # None = no hard target at all; trailing is the only way out
+        # on the profit side. Every use of tp_r below must be None-guarded.
+        tp_r = cfg.get("tp_entry_r", cfg.get("sl_entry_r", 1.0))
+        trail_trigger_r = cfg.get("trail_trigger_r")   # None = trailing disabled
+        trail_gap_r     = cfg.get("trail_gap_r", 0.0)
 
-        # (trigger_R, lock_R): when price hits trigger_R → SL moves to lock_R
-        # 1.1R → lock 0.8R immediately (no breakeven wait)
-        # 2026-07-04: shifted +0.1R on trigger, +0.05R on lock vs previous ladder —
-        # gives trades a bit more room before locking, gap now 0.30-0.35R.
-        # Steps beyond 1.9R removed — 2R hard exit (below) fires first, so a
-        # 2.2R+ trigger would never be reached.
-        TRAIL_STEPS = [
-            (1.10, 0.80),   # 1.1R → lock 0.8R  (gap: 0.30R)
-            (1.40, 1.05),   # 1.4R → lock 1.05R (gap: 0.35R)
-            (1.60, 1.25),   # 1.6R → lock 1.25R (gap: 0.35R)
-            (1.90, 1.55),   # 1.9R → lock 1.55R (gap: 0.35R)
-        ]
-
-
-        r_price = lambda n: (
-            entry_price + n * (risk_amount / pos_size_usd) * entry_price
-            if direction == "long"
-            else entry_price - n * (risk_amount / pos_size_usd) * entry_price
-        )
+        highest_pnl = 0.0
+        highest_r    = 0.0     # peak R reached — drives the trailing stop
+        trail_armed  = False   # True once highest_r >= trail_trigger_r
+        trail_stop_r = None    # current trailing stop level, once armed
+        _last_db_write = 0.0  # ts of last DB position write — time-based throttle below
 
         _consecutive_errors = 0  # track back-to-back errors to detect hard failures
 
@@ -677,7 +678,6 @@ class TradeEngine:
                     continue
 
                 elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
-                _ = elapsed  # tracked for UI display only, not used for exit
 
                 # ── PnL calculation ──────────────────────────────
                 if direction == "long":
@@ -687,97 +687,40 @@ class TradeEngine:
 
                 pnl = pnl_pct * pos_size_usd
                 highest_pnl = max(highest_pnl, pnl)
-
-                # ── Trailing SL logic ────────────────────────────
                 r_current = pnl / risk_amount if risk_amount > 0 else 0
 
-                # Process all pending trail steps in order
-                sl_updated = False
-                while trail_step < len(TRAIL_STEPS):
-                    trigger_r, lock_r = TRAIL_STEPS[trail_step]
-                    if r_current >= trigger_r:
-                        new_sl = r_price(lock_r)
-                        if (direction == "long"  and new_sl > sl_price) or \
-                           (direction == "short" and new_sl < sl_price):
-                            sl_price    = new_sl
-                            trailing_sl = sl_price
-                            sl_updated  = True
-                            last_gap_r  = trigger_r - lock_r
-                            log.info(f"{pair} {trigger_r}R hit — SL → +{lock_r}R ({sl_price:.6f})")
-                        if lock_r > 0:
-                            profit_locked = True
-                        trail_step += 1
-                    else:
-                        break  # steps are ordered, no need to check further
+                # Continuous trailing stop: once peak R reaches trail_trigger_r, arm
+                # the trailing stop at (peak_r - trail_gap_r). Every subsequent tick
+                # that raises peak_r re-tightens the stop upward — it never loosens.
+                if r_current > highest_r:
+                    highest_r = r_current
+                if trail_trigger_r is not None and highest_r >= trail_trigger_r:
+                    if not trail_armed:
+                        trail_armed = True
+                        log.info(f"{pair}: trailing armed at +{highest_r:.2f}R")
+                    trail_stop_r = highest_r - trail_gap_r
 
-                # ── Live: Update SL on Binance when trailing SL moves ──
-                # Once the first trail step fires (trail_step >= 1), switch from a plain
-                # STOP_MARKET to Binance's own TRAILING_STOP_MARKET — its engine tracks the
-                # peak price continuously and closes on its own, no more per-tick cancel/replace
-                # needed until the next R-milestone tightens the callback. If the health-check
-                # below ever finds this order missing, trailing_fallback_active locks us back
-                # onto plain STOP_MARKET for the rest of the trade (proven, safe baseline).
-                if sl_updated and self.mode == "live" and self._binance:
-                    symbol   = pair + "USDT" if not pair.endswith("USDT") else pair
-                    quantity = pos_snapshot.get("quantity", 0)
-                    sl_side  = "SELL" if direction == "long" else "BUY"
-                    try:
-                        await self._binance.cancel_all_orders(symbol)
-                        if trail_step >= 1 and not trailing_fallback_active:
-                            callback_rate = max(0.1, min(10.0,
-                                last_gap_r * (risk_amount / pos_size_usd) * 100))
-                            await self._binance.place_trailing_stop_order(
-                                symbol, sl_side, quantity, callback_rate
-                            )
-                            log.info(f"{pair} Binance trailing stop set — callback="
-                                     f"{callback_rate:.2f}% (gap {last_gap_r}R)")
-                        else:
-                            await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
-                            await self._binance.place_tp_order(symbol, sl_side, quantity, tp_price)
-                            log.info(f"{pair} Binance SL updated → {sl_price:.4f}")
-                    except Exception as e:
-                        log.error(f"{pair} Failed to update Binance SL/trailing: {e}")
+                # Convert the R-based trailing stop back to an actual price for
+                # display/DB — inverse of r = pnl/risk_amount, pnl = pnl_pct*pos_size_usd.
+                display_sl = sl_price
+                if trail_armed and trail_stop_r is not None:
+                    stop_pnl_pct = trail_stop_r * risk_amount / pos_size_usd
+                    display_sl = (entry_price * (1 + stop_pnl_pct) if direction == "long"
+                                  else entry_price * (1 - stop_pnl_pct))
 
-                # ── Live: periodic health-check on Binance-native trailing ──
-                # Verifies the trailing order is still alive on Binance's side. If it's missing
-                # while the position is still open, falls back to a plain SL immediately so the
-                # position is never left unprotected. If the position is already closed (size 0),
-                # trailing fired on its own — reconcile it as a normal exit below.
-                binance_closed_via_trailing = False
-                if (trail_step >= 1 and not trailing_fallback_active
-                        and self.mode == "live" and self._binance
-                        and int(elapsed * 2) % 10 == 0):
-                    symbol = pair + "USDT" if not pair.endswith("USDT") else pair
-                    try:
-                        live_qty = await self._binance.get_position_size(symbol)
-                        if live_qty <= 0:
-                            binance_closed_via_trailing = True
-                        else:
-                            open_algo = await self._binance.get_open_algo_orders(symbol)
-                            has_trailing = any(o.get("orderType") == "TRAILING_STOP_MARKET" for o in open_algo)
-                            if not has_trailing:
-                                quantity = pos_snapshot.get("quantity", 0)
-                                sl_side  = "SELL" if direction == "long" else "BUY"
-                                await self._binance.place_stop_order(symbol, sl_side, quantity, sl_price)
-                                trailing_fallback_active = True
-                                log.warning(f"{pair}: Binance trailing order missing — emergency "
-                                            f"fallback SL placed @ {sl_price:.6f}")
-                    except Exception as e:
-                        log.error(f"{pair} trailing health-check failed: {e}")
-
-                # Update position in DB (every 5 checks to reduce writes)
-                breakeven_hit = trail_step > 0   # at least 0.3R step triggered
-                if int(elapsed * 2) % 10 == 0:
+                # Update position in DB every ~5s. Time-based so it's independent of
+                # POSITION_CHECK_INTERVAL — the old int(elapsed*2)%10 hack assumed 0.5s
+                # ticks and would fire repeatedly at the new 0.2s interval.
+                _now = time.time()
+                if _now - _last_db_write >= 5.0:
+                    _last_db_write = _now
                     try:
                         await asyncio.to_thread(
                             db.update_position,
                             position_id, current_price,
                             round(pnl, 4), round(pnl_pct * 100, 4),
                             round(highest_pnl, 4),
-                            round(trailing_sl, 6) if trailing_sl else None,
-                            breakeven_hit,
-                            profit_locked,
-                            round(sl_price, 6),
+                            sl_price=round(display_sl, 6),
                         )
                     except Exception as e:
                         log.warning(f"{pair} DB update failed (non-fatal): {e}")
@@ -785,78 +728,52 @@ class TradeEngine:
                 await self.on_update({
                     "type": "position_update",
                     "data": {
-                        "pair":          pair,
-                        "direction":     direction,
-                        "entry":         entry_price,
-                        "current":       current_price,
-                        "sl":            sl_price,
-                        "tp":            tp_price,
-                        "pnl":           round(pnl, 4),
-                        "pnl_pct":       round(pnl_pct * 100, 4),
-                        "r":             round(r_current, 3),
-                        "highest_pnl":   round(highest_pnl, 4),
-                        "breakeven_hit": breakeven_hit,
-                        "profit_locked": profit_locked,
-                        "trailing_sl":   round(trailing_sl, 6),
-                        "elapsed_sec":   int(elapsed),
-                        "size_usd":      round(pos_size_usd, 2),
-                        "risk_usd":      round(risk_amount, 2),
+                        "pair":            pair,
+                        "direction":       direction,
+                        "entry":           entry_price,
+                        "current":         current_price,
+                        "sl":              round(display_sl, 6),
+                        "tp":              tp_price,
+                        # False when tp_r is None: tp_price is a far-away placeholder
+                        # bracket, not a real target — the UI must not show it.
+                        "has_hard_tp":     tp_r is not None,
+                        "pnl":             round(pnl, 4),
+                        "pnl_pct":         round(pnl_pct * 100, 4),
+                        "r":               round(r_current, 3),
+                        "highest_pnl":     round(highest_pnl, 4),
+                        "trailing_armed":  trail_armed,
+                        "profit_locked":   trail_armed,
+                        "trailing_sl":     round(display_sl, 6) if trail_armed else None,
+                        "elapsed_sec":     int(elapsed),
+                        "size_usd":        round(pos_size_usd, 2),
+                        "risk_usd":        round(risk_amount, 2),
                     }
                 })
 
-                # ── Exit conditions ──────────────────────────────
+                # ── Exit conditions — R-multiple based, not raw price ──────────────
+                # r_current's sign already encodes direction via pnl (long/short
+                # handled above), so this check is direction-agnostic. Using R
+                # instead of comparing current_price against sl_price/tp_price
+                # avoids the exchange-tick-size rounding that previously let
+                # trades run far past their intended SL/TP (confirmed bug: ALT,
+                # PENGU, SKL all missed their exit because the rounded sl_price/
+                # tp_price landed at the wrong tick for sub-cent tokens).
                 exit_reason = None
-
-                # 2R → hard exit (profit booked)
-                if r_current >= 2.0:
-                    exit_reason = "2r_target"
-                # Early stop — exit at -1.5R if no trailing step has triggered yet
-                elif r_current <= -1.5 and trail_step == 0:
-                    exit_reason = "max_loss"
-                # Binance's native TRAILING_STOP_MARKET closed the position on its own —
-                # reconcile using its real fill data (handled in _close_position for live mode).
-                elif binance_closed_via_trailing:
+                if tp_r is not None and r_current >= tp_r:
+                    exit_reason = "tp"   # hard-cap exit
+                elif trail_armed and r_current <= trail_stop_r:
+                    # trailing stop hit — peaked above trail_trigger_r, then pulled
+                    # back to the current locked level (peak_r - trail_gap_r)
                     exit_reason = "trailing"
-                # Binance-native trailing is live and authoritative once engaged — don't use
-                # our own stale ladder sl_price to trigger an exit here, it lags Binance's
-                # continuously-updated peak-tracking level. Only the checks above apply.
-                elif trail_step >= 1 and not trailing_fallback_active and self.mode == "live":
-                    pass
-                elif direction == "long":
-                    if current_price <= sl_price:
-                        exit_reason = "sl" if trail_step == 0 else "trailing"
-                    elif current_price >= tp_price:
-                        exit_reason = "tp"
-                else:
-                    if current_price >= sl_price:
-                        exit_reason = "sl" if trail_step == 0 else "trailing"
-                    elif current_price <= tp_price:
-                        exit_reason = "tp"
+                elif not trail_armed and r_current <= -sl_r:
+                    exit_reason = "sl"
 
                 if exit_reason:
-                    # SL / breakeven / trailing → exit at sl_price (simulates real SL order).
-                    # max_loss → exit at exact -1.5R price level (backstop when the -1R SL
-                    #            didn't fill, e.g. a gap; caps the recorded slippage at 1.5R).
-                    # TP and 2R target → exit at current_price (market fill, no fixed order).
-                    if exit_reason in ("sl", "breakeven", "trailing"):
-                        exit_p = sl_price
-                        if direction == "long":
-                            exit_pct = (sl_price - entry_price) / entry_price
-                        else:
-                            exit_pct = (entry_price - sl_price) / entry_price
-                        exit_pnl = exit_pct * pos_size_usd
-                    elif exit_reason == "max_loss":
-                        exit_p = r_price(-1.5)
-                        exit_pct = -1.5 * (risk_amount / pos_size_usd)
-                        exit_pnl = -1.5 * risk_amount
-                    else:
-                        # tp, 2r_target — exit at current market price
-                        exit_p   = current_price
-                        exit_pnl = pnl
-                        exit_pct = pnl_pct
-
+                    # Use the actual current price/pnl at trigger time, not the
+                    # theoretical sl_price/tp_price target — more accurate and
+                    # immune to any remaining price-rounding distortion.
                     await self._close_position(pair, trade_id, position_id, pos_snapshot,
-                                               exit_p, exit_pnl, exit_pct, risk_amount,
+                                               current_price, pnl, pnl_pct, risk_amount,
                                                exit_reason, entry_time)
                     return
 
@@ -887,17 +804,17 @@ class TradeEngine:
         if not self._open[pair]:
             del self._open[pair]
 
-        # SL cooldown — set on sl, trailing, or max_loss exit to block re-entry for 20 min
-        if reason in ("sl", "trailing", "max_loss"):
+        # Post-exit cooldown — set on SL or TP exit to block re-entry for 20 min
+        if reason in ("sl", "tp"):
             self._sl_cooldown[pair] = time.time()
-            log.info(f"{pair}: SL cooldown started — no re-entry for 20 min")
+            log.info(f"{pair}: post-exit cooldown started ({reason.upper()}) — no re-entry for 20 min")
+
+        is_shadow = pos_snapshot.get("is_shadow", False)
 
         # ── Live: Close position on Binance ──────────────────
-        real_exit_fee = None
-        if self.mode == "live" and self._binance:
-            symbol     = pair + "USDT" if not pair.endswith("USDT") else pair
-            direction  = pos_snapshot.get("direction", "long")
-            close_side = "SELL" if direction == "long" else "BUY"
+        # Nothing was ever opened on the exchange for a shadow trade.
+        if self.mode == "live" and self._binance and not is_shadow:
+            symbol = pair + "USDT" if not pair.endswith("USDT") else pair
             try:
                 await self._binance.cancel_all_orders(symbol)
                 # Guard: only place market close if Binance still holds an open position.
@@ -905,6 +822,8 @@ class TradeEngine:
                 # here would open a new opposite position unintentionally.
                 live_qty = await self._binance.get_position_size(symbol)
                 if live_qty > 0:
+                    direction  = pos_snapshot.get("direction", "long")
+                    close_side = "SELL" if direction == "long" else "BUY"
                     order = await self._binance.place_market_order(symbol, close_side, live_qty)
                     log.info(f"Binance CLOSE order placed: {order.get('orderId')} | {reason}")
                 else:
@@ -912,34 +831,12 @@ class TradeEngine:
             except Exception as e:
                 log.error(f"Binance close order error: {e}", exc_info=True)
 
-            # Reconcile with Binance's real fills — exit_price/pnl above are the bot's own
-            # trigger-price estimate, not the actual filled price. Pull the real closing
-            # fills so DB/dashboard numbers match Binance exactly. Falls back to the
-            # estimate on any failure — never blocks the close.
-            if entry_time:
-                try:
-                    entry_ms      = int(entry_time.timestamp() * 1000)
-                    trades        = await self._binance.get_recent_trades(symbol, limit=20)
-                    closing_fills = [t for t in trades
-                                     if t.get("side") == close_side and int(t.get("time", 0)) >= entry_ms]
-                    fill_qty = sum(float(t["qty"]) for t in closing_fills)
-                    if fill_qty > 0:
-                        exit_price = sum(float(t["price"]) * float(t["qty"]) for t in closing_fills) / fill_qty
-                        pnl        = sum(float(t["realizedPnl"]) for t in closing_fills)
-                        pos_size_usd_snapshot = pos_snapshot.get("position_size_usd", 0)
-                        if pos_size_usd_snapshot:
-                            pnl_pct = pnl / pos_size_usd_snapshot
-                        real_exit_fee = sum(float(t["commission"]) for t in closing_fills
-                                             if t.get("commissionAsset") == "USDT")
-                except Exception as e:
-                    log.warning(f"{pair}: could not reconcile real fill data — using estimate: {e}")
-
         r_multiple = pnl / risk_amount if risk_amount > 0 else 0
         duration   = int((datetime.now(timezone.utc) - entry_time).total_seconds()) if entry_time else 0
 
-        # Fee: entry fee already stored — add exit fee here (real fee in live mode if available)
+        # Fee: entry fee already stored — add exit fee here
         pos_size_usd = pos_snapshot.get("position_size_usd", 0)
-        exit_fee     = real_exit_fee if real_exit_fee is not None else pos_size_usd * TAKER_FEE_RATE
+        exit_fee     = pos_size_usd * TAKER_FEE_RATE
         entry_fee    = pos_snapshot.get("fee", pos_size_usd * TAKER_FEE_RATE)
         total_fee    = round(entry_fee + exit_fee, 4)
         net_pnl      = round(pnl - total_fee, 4)
@@ -952,19 +849,34 @@ class TradeEngine:
         )
         await asyncio.to_thread(db.close_position, position_id)
 
-        # Wallet — always recalculate from DB to stay accurate
-        self._total_pnl = await asyncio.to_thread(db.get_total_pnl, self.mode)
-        self._daily_pnl = await asyncio.to_thread(db.get_today_pnl, self.mode)
-        self._balance   = self._initial_balance + self._total_pnl
-        await asyncio.to_thread(
-            db.update_wallet, self.mode, self._balance,
-            self._total_pnl, self._initial_balance, self._daily_pnl
-        )
-        await asyncio.to_thread(db.upsert_performance, self.mode)
+        # A shadow trade's result is written to `trades` and stops there. It never
+        # moves the wallet, never feeds the loss-streak counter, and never teaches
+        # the adaptive filter — otherwise a setup the strategy deliberately refused
+        # to fund would still be steering it. The DB helpers below already exclude
+        # is_shadow rows, so the wallet stays correct without special-casing here;
+        # skipping the calls outright just avoids pointless round-trips.
+        if not is_shadow:
+            # Wallet — always recalculate from DB to stay accurate
+            self._total_pnl = await asyncio.to_thread(db.get_total_pnl, self.mode)
+            self._daily_pnl = await asyncio.to_thread(db.get_today_pnl, self.mode)
+            self._balance   = self._initial_balance + self._total_pnl
+            await asyncio.to_thread(
+                db.update_wallet, self.mode, self._balance,
+                self._total_pnl, self._initial_balance, self._daily_pnl
+            )
+            await asyncio.to_thread(db.upsert_performance, self.mode)
 
-        self.risk.record_trade_result(pnl, self.mode)
+            self.risk.record_trade_result(pnl, self.mode)
 
-        log.info(f"TRADE CLOSED: {pair} | {reason.upper()} | PnL=${pnl:.2f} ({pnl_pct*100:.2f}%) | R={r_multiple:.2f}")
+            # Feed the adaptive filter. Uses NET R (after both fees) — fees run ~0.16R
+            # per trade here, so gross r_multiple would make every pair look better
+            # than it is. Recorded only now, at close, which keeps the filter causal.
+            net_r = net_pnl / risk_amount if risk_amount > 0 else None
+            self.adaptive.record(pair, net_r)
+
+        log.info(f"{'👻 SHADOW CLOSED' if is_shadow else 'TRADE CLOSED'}: {pair} | "
+                 f"{reason.upper()} | PnL=${pnl:.2f} ({pnl_pct*100:.2f}%) | R={r_multiple:.2f}"
+                 f"{' — not counted in wallet/stats' if is_shadow else ''}")
 
         await self.on_update({
             "type": "trade_closed",
@@ -977,6 +889,7 @@ class TradeEngine:
                 "reason":    reason,
                 "balance":   round(self._balance, 4),
                 "total_pnl": round(self._total_pnl, 4),
+                "is_shadow": is_shadow,
             }
         })
 
@@ -1005,7 +918,6 @@ class TradeEngine:
             if not open_positions:
                 return
             log.info(f"Recovering {len(open_positions)} open position(s) from previous session...")
-            cfg_map = {"scalping": SCALPING, "swing": SWING}
             for p in open_positions:
                 pair = p["pair"]
                 # Skip if already in _open (shouldn't happen on fresh start)
@@ -1024,12 +936,13 @@ class TradeEngine:
                     "quantity":          p["quantity"],
                     "fee":               p.get("fee", 0),
                     "mode":              self.mode,
+                    "is_shadow":         p.get("is_shadow", False),
                     "_entry_time":       datetime.now(timezone.utc),  # approximate from now
                 }
                 trade_id    = p["trade_id"]
                 position_id = p["position_id"]
                 style       = p.get("style", "scalping")
-                cfg         = cfg_map.get(style, SCALPING)
+                cfg         = style_cfg(style)
                 monitor_task = asyncio.create_task(
                     self._monitor_position(pair, style, cfg, trade_id, position_id, pos_snapshot)
                 )
@@ -1099,9 +1012,7 @@ class TradeEngine:
                 try:
                     open_orders = await self._binance.get_open_orders(symbol)
                     for order in open_orders:
-                        # Algo orders expose `orderType`/`triggerPrice`; fall back to the legacy
-                        # `type`/`stopPrice` names defensively in case the field shape varies.
-                        otype = order.get("orderType") or order.get("type", "")
+                        otype = order.get("type", "")
                         oside = order.get("side", "")
                         # SL must be on the CLOSING side
                         is_sl_side = (
@@ -1109,7 +1020,7 @@ class TradeEngine:
                             (direction == "short" and oside == "BUY")
                         )
                         if otype == "STOP_MARKET" and is_sl_side:
-                            sl_candidate = float(order.get("triggerPrice") or order.get("stopPrice", 0))
+                            sl_candidate = float(order.get("stopPrice", 0))
                             if sl_candidate > 0:
                                 sl_price = sl_candidate
                                 log.info(f"{symbol}: Existing SL found @ {sl_price}")
@@ -1165,7 +1076,7 @@ class TradeEngine:
                     tp_price = entry_price - tp_dist
 
                 # Round prices to symbol precision
-                price_prec = PRICE_PRECISION.get(symbol, 4)
+                price_prec = get_price_precision(symbol)
                 sl_price   = round(sl_price,  price_prec)
                 tp_price   = round(tp_price,  price_prec)
 
@@ -1247,9 +1158,16 @@ class TradeEngine:
                         "_entry_time": datetime.now(timezone.utc),
                     }
 
-                    # Start software position monitor (trailing, -1R exit, etc.)
+                    # Start software position monitor. This path's risk_amount IS the
+                    # actual placed SL distance (sl_dist * quantity) and tp_dist is a
+                    # fixed 2x that — a 1R/2R relationship, NOT the SCALPING cfg's
+                    # sl_entry_r/tp_entry_r (which are multiples of a separate ATR-based
+                    # reference distance). Override so the R-based exit check matches
+                    # what was actually placed on Binance, instead of the primary
+                    # entry path's thresholds.
+                    orphan_cfg = {**SCALPING, "sl_entry_r": 1.0, "tp_entry_r": 2.0}
                     monitor_task = asyncio.create_task(
-                        self._monitor_position(pair, "scalping", SCALPING, trade_id, pos_id, pos_snapshot)
+                        self._monitor_position(pair, "scalping", orphan_cfg, trade_id, pos_id, pos_snapshot)
                     )
                     entry_record = {
                         "trade_id":     trade_id,
@@ -1273,6 +1191,26 @@ class TradeEngine:
         except Exception as e:
             log.error(f"_reconcile_binance_positions failed: {e}", exc_info=True)
 
+    async def warm_start_adaptive(self) -> int:
+        """Rebuild the adaptive filter from this bot's closed trades in the DB.
+
+        Called once at startup — without it every restart would begin with an
+        empty window and trade blocked pairs again until it relearned them.
+        """
+        if not self.adaptive.enabled:
+            return 0
+        try:
+            rows = await asyncio.to_thread(
+                db.get_closed_for_adaptive, self.mode, self.trader_name, 600
+            )
+            return self.adaptive.warm_start(rows)
+        except Exception as e:
+            log.warning(f"Adaptive warm-start failed (non-fatal, starts empty): {e}")
+            return 0
+
+    def adaptive_snapshot(self) -> Dict:
+        return self.adaptive.snapshot()
+
     def set_price_getter(self, fn):
         self._get_price = fn
 
@@ -1288,7 +1226,14 @@ class TradeEngine:
         return len(self._open.get(pair, []))
 
     def total_open_positions(self) -> int:
-        return sum(len(v) for v in self._open.values())
+        """Real open trades only — this feeds the max-concurrent-trades gate, and
+        shadow trades must never consume one of those slots."""
+        return sum(
+            1
+            for entries in self._open.values()
+            for e in entries
+            if not e["pos"].get("is_shadow", False)
+        )
 
     def wallet_snapshot(self) -> Dict:
         return {
@@ -1315,6 +1260,7 @@ class TradeEngine:
                 tp_price     = pos.get("tp_price", 0)
                 pos_size_usd = pos.get("position_size_usd", 0)
                 risk_amount  = pos.get("risk_amount", 1)
+                style        = pos.get("style", "scalping")
 
                 if direction == "long":
                     pnl_pct = (current - entry_price) / entry_price
@@ -1324,27 +1270,43 @@ class TradeEngine:
                 pnl       = pnl_pct * pos_size_usd
                 r_current = pnl / risk_amount if risk_amount > 0 else 0
 
+                # Reconnect snapshot has no memory of this position's historical peak
+                # R (that lives in _monitor_position's closure) — best-effort using
+                # r_current as the peak; the next live tick from the running monitor
+                # corrects this immediately.
+                cfg = style_cfg(style)
+                trail_trigger_r = cfg.get("trail_trigger_r")
+                trail_gap_r     = cfg.get("trail_gap_r", 0.0)
+                trail_armed = trail_trigger_r is not None and r_current >= trail_trigger_r
+                display_sl = sl_price
+                if trail_armed:
+                    trail_stop_r = r_current - trail_gap_r
+                    stop_pnl_pct = trail_stop_r * risk_amount / pos_size_usd if pos_size_usd else 0
+                    display_sl = (entry_price * (1 + stop_pnl_pct) if direction == "long"
+                                  else entry_price * (1 - stop_pnl_pct))
+
                 # Calculate actual elapsed time from stored entry_time
                 entry_time  = pos.get("_entry_time")
                 elapsed_sec = int((datetime.now(timezone.utc) - entry_time).total_seconds()) \
                               if entry_time else 0
 
                 result.append({
-                    "pair":          pair,
-                    "direction":     direction,
-                    "entry":         entry_price,
-                    "current":       current,
-                    "sl":            sl_price,
-                    "tp":            tp_price,
-                    "pnl":           round(pnl, 4),
-                    "pnl_pct":       round(pnl_pct * 100, 4),
-                    "r":             round(r_current, 3),
-                    "highest_pnl":   0,
-                    "breakeven_hit": False,
-                    "profit_locked": False,
-                    "trailing_sl":   sl_price,
-                    "elapsed_sec":   elapsed_sec,
-                    "size_usd":      round(pos_size_usd, 2),
-                    "risk_usd":      round(risk_amount, 2),
+                    "pair":            pair,
+                    "direction":       direction,
+                    "entry":           entry_price,
+                    "current":         current,
+                    "sl":              round(display_sl, 6),
+                    "tp":              tp_price,
+                    "has_hard_tp":     cfg.get("tp_entry_r", 1.0) is not None,
+                    "pnl":             round(pnl, 4),
+                    "pnl_pct":         round(pnl_pct * 100, 4),
+                    "r":               round(r_current, 3),
+                    "highest_pnl":     0,
+                    "trailing_armed":  trail_armed,
+                    "profit_locked":   trail_armed,
+                    "trailing_sl":     round(display_sl, 6) if trail_armed else None,
+                    "elapsed_sec":     elapsed_sec,
+                    "size_usd":        round(pos_size_usd, 2),
+                    "risk_usd":        round(risk_amount, 2),
                 })
         return result

@@ -9,7 +9,7 @@ import {
 import {
   TrendingUp, TrendingDown, Target, Zap,
   Trophy, AlertTriangle, CheckCircle, Info,
-  BarChart2, Activity, Clock,
+  BarChart2, Activity, Clock, Coins,
 } from "lucide-react";
 
 const supabase = createClient(
@@ -31,14 +31,25 @@ interface Trade {
   pnl: number;
   net_pnl: number;
   r_multiple: number;
+  fee: number;
   signals_at_entry: any;
   pair: string;
   direction: string;
   exit_reason: string;
   created_at: string;
+  exit_time: string;
   style: string;
   signal_score: number;
 }
+
+// P&L belongs to the day the trade CLOSED, not the day it opened — a position
+// held across IST midnight is realised on the later date. The backend's
+// performance table and PerfStats both key off exit_time; the charts below used
+// created_at, which put every midnight-straddling trade on the wrong day (seen
+// 2026-08-10: MMT opened 23:45 / closed 00:29, so "Today's Performance" showed
+// 7 trades / +$7,622 while the daily breakdown showed 6 / +$6,532).
+// Entry-time analysis (the hour-of-day chart) still uses created_at by design.
+const dayOf = (t: Trade) => t.exit_time || t.created_at;
 
 function winRate(wins: number, total: number) {
   return total > 0 ? Math.round((wins / total) * 100) : 0;
@@ -119,9 +130,12 @@ export default function Analytics() {
     setLoading(true);
     let query = supabase
       .from("trades")
-      .select("pnl, net_pnl, r_multiple, signals_at_entry, pair, direction, exit_reason, created_at, style, signal_score")
+      .select("pnl, net_pnl, r_multiple, fee, signals_at_entry, pair, direction, exit_reason, created_at, exit_time, style, signal_score")
       .eq("mode", m).eq("status", "closed")
-      .order("created_at", { ascending: true })
+      .eq("is_shadow", false)   // analytics measure the funded strategy only
+      // ordered by realisation so the cumulative equity curve steps in the order
+      // the money actually landed
+      .order("exit_time", { ascending: true })
       .limit(2000);
     if (traderFilter) query = query.eq("trader_name", traderFilter);
     const { data } = await query;
@@ -154,6 +168,7 @@ export default function Analytics() {
     const wins  = trades.filter(t => t.pnl > 0).length;
     const totalPnl = trades.reduce((s, t) => s + (t.net_pnl || t.pnl || 0), 0);
     const totalR   = trades.reduce((s, t) => s + (t.r_multiple || 0), 0);
+    const totalFees = trades.reduce((s, t) => s + (t.fee || 0), 0);
     const wr = winRate(wins, total);
     const ar = avgR(totalR, total);
 
@@ -254,7 +269,7 @@ export default function Analytics() {
       if (bestCombo && bestCombo.wr >= 65 && bestCombo.total >= 3) insights.push({ type: "good", text: `Best combo ${bestCombo.combo} — ${bestCombo.wr}% win rate (${bestCombo.total} trades)` });
     }
 
-    return { total, wins, totalPnl, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights };
+    return { total, wins, totalPnl, totalFees, wr, ar, equity, pairStats, dirMap, exitStats, scoreData, comboStats, insights };
   }, [trades]);
 
   const equityUp = stats.totalPnl >= 0;
@@ -318,9 +333,9 @@ export default function Analytics() {
     // Group trades by IST date → daily net PnL
     const dayMap: Record<string, number> = {};
     trades.forEach(t => {
-      if (!t.created_at) return;
+      if (!dayOf(t)) return;
       // Convert UTC timestamp to IST date
-      const day = new Date(new Date(t.created_at).getTime() + IST_OFFSET)
+      const day = new Date(new Date(dayOf(t)).getTime() + IST_OFFSET)
         .toISOString().slice(0, 10);
       dayMap[day] = (dayMap[day] || 0) + (t.net_pnl || t.pnl || 0);
     });
@@ -378,8 +393,8 @@ export default function Analytics() {
   const dailyStats = useMemo(() => {
     const dayMap: Record<string, { total: number; wins: number; losses: number; pnl: number; rSum: number }> = {};
     trades.forEach(t => {
-      if (!t.created_at) return;
-      const day = new Date(new Date(t.created_at).getTime() + IST_OFFSET)
+      if (!dayOf(t)) return;
+      const day = new Date(new Date(dayOf(t)).getTime() + IST_OFFSET)
         .toISOString().slice(0, 10);
       if (!dayMap[day]) dayMap[day] = { total: 0, wins: 0, losses: 0, pnl: 0, rSum: 0 };
       dayMap[day].total++;
@@ -415,7 +430,7 @@ export default function Analytics() {
     const startMs = getStart();
 
     const filtered = days || equityPeriod === "1D"
-      ? trades.filter(t => new Date(t.created_at).getTime() >= startMs)
+      ? trades.filter(t => new Date(dayOf(t)).getTime() >= startMs)
       : trades;
     let running = 0;
     return filtered.map((t, i) => {
@@ -435,7 +450,7 @@ export default function Analytics() {
   const zeroPct = equityMax > 0 ? `${Math.min(100, Math.max(0, (equityMax / equityRange) * 100)).toFixed(1)}%` : "0%";
 
   return (
-    <main className="flex-1 overflow-y-auto bg-[#07090f]">
+    <main className="flex-1 overflow-y-auto bg-[#07090f] pb-24 md:pb-0">
 
         {/* ── Page Header ─────────────────────────────── */}
         <div className="border-b border-[#1a2030] bg-[#070a10]/80 backdrop-blur-sm sticky top-0 z-10">
@@ -492,24 +507,24 @@ export default function Analytics() {
             <span className="text-gray-600 text-sm">No closed trades in {mode} mode yet</span>
           </div>
         ) : (
-          <div className="p-4 space-y-4">
+          <div className="p-3 sm:p-4 space-y-4">
 
             {/* ── KPI Hero Cards ──────────────────────────── */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
 
               {/* Total Trades */}
-              <div className="relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group hover:border-indigo-500/40 transition-colors duration-300 min-h-[130px]">
+              <div className="relative min-h-[118px] rounded-2xl border border-[#1e2433] bg-[#0d1117] p-4 transition-colors duration-300 group hover:border-indigo-500/40 sm:min-h-[130px] sm:p-5">
                 <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent via-indigo-500/70 to-transparent" />
                 <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500/[0.06] via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Total Trades</span>
+                  <div className="mb-3 flex items-center justify-between sm:mb-4">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-500 sm:text-[10px] sm:tracking-widest">Total Trades</span>
                     <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors duration-300">
                       <Zap size={14} className="text-indigo-400" />
                     </div>
                   </div>
-                  <div className="text-4xl font-black text-white tracking-tight">{stats.total}</div>
-                  <div className="flex items-center gap-2 mt-2.5">
+                  <div className="text-[36px] font-black tracking-tight text-white sm:text-4xl">{stats.total}</div>
+                  <div className="mt-2 flex items-center gap-1.5 sm:mt-2.5 sm:gap-2">
                     <span className="text-[11px] font-bold text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">{stats.wins}W</span>
                     <span className="text-gray-700 text-xs">·</span>
                     <span className="text-[11px] font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">{stats.total - stats.wins}L</span>
@@ -518,18 +533,18 @@ export default function Analytics() {
               </div>
 
               {/* Win Rate */}
-              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${stats.wr >= 50 ? "hover:border-green-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+              <div className={`relative min-h-[118px] rounded-2xl border border-[#1e2433] bg-[#0d1117] p-4 group transition-colors duration-300 sm:min-h-[130px] sm:p-5 ${stats.wr >= 50 ? "hover:border-green-500/40" : "hover:border-red-500/40"}`}>
                 <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${stats.wr >= 50 ? "via-green-500/70" : "via-red-500/70"} to-transparent`} />
                 <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${stats.wr >= 50 ? "from-green-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Win Rate</span>
+                  <div className="mb-3 flex items-center justify-between sm:mb-4">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-500 sm:text-[10px] sm:tracking-widest">Win Rate</span>
                     <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${stats.wr >= 50 ? "bg-green-500/10 border-green-500/20 group-hover:bg-green-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
                       <Target size={14} className={stats.wr >= 50 ? "text-green-400" : "text-red-400"} />
                     </div>
                   </div>
-                  <div className={`text-4xl font-black tracking-tight ${stats.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{stats.wr}%</div>
-                  <div className="mt-3 h-1.5 bg-[#1a2030] rounded-full overflow-hidden">
+                  <div className={`text-[36px] font-black tracking-tight sm:text-4xl ${stats.wr >= 50 ? "text-green-400" : "text-red-400"}`}>{stats.wr}%</div>
+                  <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-[#1a2030] sm:mt-3">
                     <div className={`h-full rounded-full transition-all duration-700 ${stats.wr >= 50 ? "bg-gradient-to-r from-green-600 to-green-400" : "bg-gradient-to-r from-red-700 to-red-500"}`}
                       style={{ width: `${stats.wr}%` }} />
                   </div>
@@ -537,38 +552,58 @@ export default function Analytics() {
               </div>
 
               {/* Avg R */}
-              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${stats.ar >= 0 ? "hover:border-purple-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+              <div className={`relative min-h-[118px] rounded-2xl border border-[#1e2433] bg-[#0d1117] p-4 group transition-colors duration-300 sm:min-h-[130px] sm:p-5 ${stats.ar >= 0 ? "hover:border-purple-500/40" : "hover:border-red-500/40"}`}>
                 <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${stats.ar >= 0 ? "via-purple-500/70" : "via-red-500/70"} to-transparent`} />
                 <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${stats.ar >= 0 ? "from-purple-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Avg R</span>
+                  <div className="mb-3 flex items-center justify-between sm:mb-4">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-500 sm:text-[10px] sm:tracking-widest">Avg R</span>
                     <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${stats.ar >= 0 ? "bg-purple-500/10 border-purple-500/20 group-hover:bg-purple-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
                       <TrendingUp size={14} className={stats.ar >= 0 ? "text-purple-400" : "text-red-400"} />
                     </div>
                   </div>
-                  <div className={`text-4xl font-black tracking-tight ${stats.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
+                  <div className={`text-[36px] font-black tracking-tight sm:text-4xl ${stats.ar >= 0 ? "text-purple-400" : "text-red-400"}`}>
                     {stats.ar >= 0 ? "+" : ""}{stats.ar}R
                   </div>
-                  <div className="text-[11px] text-gray-600 mt-2.5">per trade average</div>
+                  <div className="mt-2 text-[10px] text-gray-600 sm:mt-2.5 sm:text-[11px]">per trade average</div>
                 </div>
               </div>
 
               {/* Net P&L */}
-              <div className={`relative bg-[#0d1117] border border-[#1e2433] rounded-2xl p-5 group min-h-[130px] ${equityUp ? "hover:border-green-500/40" : "hover:border-red-500/40"} transition-colors duration-300`}>
+              <div className={`relative min-h-[118px] rounded-2xl border border-[#1e2433] bg-[#0d1117] p-4 group transition-colors duration-300 sm:min-h-[130px] sm:p-5 ${equityUp ? "hover:border-green-500/40" : "hover:border-red-500/40"}`}>
                 <div className={`absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent ${equityUp ? "via-green-500/70" : "via-red-500/70"} to-transparent`} />
                 <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${equityUp ? "from-green-500/[0.06]" : "from-red-500/[0.06]"} via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Net P&L</span>
+                  <div className="mb-3 flex items-center justify-between sm:mb-4">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-500 sm:text-[10px] sm:tracking-widest">Net P&L</span>
                     <div className={`w-8 h-8 rounded-xl flex items-center justify-center border transition-colors duration-300 ${equityUp ? "bg-green-500/10 border-green-500/20 group-hover:bg-green-500/20" : "bg-red-500/10 border-red-500/20 group-hover:bg-red-500/20"}`}>
                       {equityUp ? <TrendingUp size={14} className="text-green-400" /> : <TrendingDown size={14} className="text-red-400" />}
                     </div>
                   </div>
-                  <div className={`text-3xl font-black tracking-tight leading-none ${equityUp ? "text-green-400" : "text-red-400"}`}>
+                  <div className={`text-[28px] font-black leading-none tracking-tight sm:text-3xl ${equityUp ? "text-green-400" : "text-red-400"}`}>
                     {equityUp ? "+" : ""}{fmtINR(stats.totalPnl, 0)}
                   </div>
-                  <div className="text-[11px] text-gray-600 mt-2.5">after all fees</div>
+                  <div className="mt-2 text-[10px] text-gray-600 sm:mt-2.5 sm:text-[11px]">after all fees</div>
+                </div>
+              </div>
+
+              {/* Total Fees */}
+              <div className="relative col-span-2 min-h-[118px] rounded-2xl border border-[#1e2433] bg-[#0d1117] p-4 group transition-colors duration-300 hover:border-amber-500/40 sm:col-span-1 sm:min-h-[130px] sm:p-5">
+                <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-2xl bg-gradient-to-r from-transparent via-amber-500/70 to-transparent" />
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-amber-500/[0.06] via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="relative">
+                  <div className="mb-3 flex items-center justify-between sm:mb-4">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-500 sm:text-[10px] sm:tracking-widest">Total Fees</span>
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center group-hover:bg-amber-500/20 transition-colors duration-300">
+                      <Coins size={14} className="text-amber-400" />
+                    </div>
+                  </div>
+                  <div className="text-[28px] font-black tracking-tight leading-none text-amber-400 sm:text-3xl">
+                    {fmtINR(stats.totalFees, 0)}
+                  </div>
+                  <div className="mt-2 text-[10px] text-gray-600 sm:mt-2.5 sm:text-[11px]">
+                    ~{fmtINR(stats.total > 0 ? stats.totalFees / stats.total : 0, 0)} per trade
+                  </div>
                 </div>
               </div>
 

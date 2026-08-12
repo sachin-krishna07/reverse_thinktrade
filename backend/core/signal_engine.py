@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Dict, Optional, Tuple
 
-from config import SCALPING, SWING, MIN_SIGNAL_SCORE
+from config import SCALPING, SWING, MIN_SIGNAL_SCORE, style_cfg
 from core.indicators import (
     ema, adx, rsi, atr, vwap,
     cvd_divergence, dom_imbalance,
@@ -99,14 +99,17 @@ class SignalEngine:
         self.md = market_data
 
     def score(self, pair: str, style: str, btc_direction: str = None) -> SignalResult:
-        cfg = SCALPING if style == "scalping" else SWING
+        cfg = style_cfg(style)
         result = SignalResult()
         result.current_price = self.md.get_price(pair)
 
         if not self.md.is_ready(pair, style):
             return result
 
-        entry_candles = self.md.get_candles(pair, cfg["entry_tf"])
+        # closed_only=True → drop the still-forming candle so all indicators
+        # (ATR, VWAP, RSI, sweeps, FVG) are computed on completed candles only.
+        # current_price above stays live for display/exit logic.
+        entry_candles = self.md.get_candles(pair, cfg["entry_tf"], closed_only=True)
 
         if len(entry_candles) < 20:
             return result
@@ -147,7 +150,10 @@ class SignalEngine:
 
         tf_directions = []
         for i, tf in enumerate(confirm_tfs):
-            tf_candles = self.md.get_candles(pair, tf)
+            # closed_only=True — the multi-TF trend must be read from CLOSED
+            # candles. A forming 30m candle can flip the EMA/ADX/DI trend for up
+            # to 30 min, which is the #1 cause of false-trend entries.
+            tf_candles = self.md.get_candles(pair, tf, closed_only=True)
             if len(tf_candles) < 30:
                 tf_directions.append("neutral")
                 continue
@@ -212,7 +218,7 @@ class SignalEngine:
         H1_RSI_OB = 75   # overbought threshold
         H1_RSI_OS = 25   # oversold threshold
         try:
-            h1_candles = self.md.get_candles(pair, "1h")
+            h1_candles = self.md.get_candles(pair, "1h", closed_only=True)
             if len(h1_candles) >= 30:
                 h1_closes = [c["close"] for c in h1_candles]
                 h1_highs  = [c["high"]  for c in h1_candles]
@@ -232,18 +238,14 @@ class SignalEngine:
                 else:
                     result.h1_rsi_state = "neutral"
 
-                # Block: overbought → no LONG | oversold → no SHORT
-                rsi_blocked = (
-                    (result.h1_rsi_state == "overbought" and direction == "long") or
-                    (result.h1_rsi_state == "oversold"   and direction == "short")
-                )
-                if rsi_blocked:
-                    result.h1_rsi_blocked   = True
-                    result.total_score      = score
-                    result.signal_direction = direction
-                    result.trade_signal     = False
-                    log.debug(f"{pair}: blocked by 1H RSI={h1_rsi_val:.1f} ({result.h1_rsi_state}) signal={direction}")
-                    return result
+                # Blocking disabled 2026-08-12 per user request. The value and
+                # state above are still computed and published (UI keeps its
+                # OB/OS chip), but an extreme 1H RSI no longer cancels the trade.
+                # The old early-return also skipped layers 2-7, so any pair it
+                # blocked was reported as 1/7 instead of its real score —
+                # removing it makes total_score honest again.
+                # h1_rsi_blocked stays False; the 1H trend bias gate below is
+                # untouched and still applies.
 
                 # ── 1H Trend Bias check ───────────────────────
                 if h1_adx >= 20:
@@ -353,11 +355,9 @@ class SignalEngine:
         result.total_score      = score
         result.signal_direction = direction
 
-        # ── L8: EMA Pullback (Mandatory Gate) ───────────────────
-        # Price must be near EMA-9 on entry TF before any trade.
-        # Long:  price pulled back near EMA-9 from above (dip before resume up)
-        # Short: price bounced near EMA-9 from below (pop before resume down)
-        # Also checks: EMA not flat, EMA not broken in last 5 candles
+        # ── L8: EMA Pullback (mandatory gate — restored 2026-07-26 per user
+        # request). Price near EMA-9 pullback/bounce check. Not counted toward
+        # total_score (still out of 7), but trade_signal requires it green.
         pullback_ok = ema_pullback(e_closes, direction, period=9, tolerance_pct=0.0075)
         result.ema_pullback = 1 if pullback_ok else 0
 

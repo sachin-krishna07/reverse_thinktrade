@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, List, Optional, Set
 
-from config import SCALPING, SWING, SIGNAL_BROADCAST_INTERVAL, MIN_SIGNAL_SCORE, QUIET_HOURS_START, QUIET_HOURS_END
+from config import SCALPING, SWING, SIGNAL_BROADCAST_INTERVAL, MIN_SIGNAL_SCORE
 from core.market_data import MarketDataManager
 from core.signal_engine import SignalEngine
 from core.risk_manager import RiskManager
@@ -26,6 +25,7 @@ class BotController:
         self._pairs:        List[str] = []
         self._capital_pct:  float = 1.0
         self._leverage:     float = 5.0
+        self._reverse_direction: bool = False
 
         self._broadcast_cb: Optional[Callable] = None
         self._tasks:        List[asyncio.Task] = []
@@ -37,7 +37,36 @@ class BotController:
 
     async def start(self, mode: str, style: str, pairs: List[str],
                     capital_pct: float, broadcast_cb: Callable, leverage: float = 5.0,
-                    trader_name: str = "Unknown"):
+                    trader_name: str = "Unknown", reverse_direction: bool = False):
+        # main.py fires this via asyncio.create_task() and returns immediately —
+        # an unhandled exception here is swallowed by asyncio (only visible as
+        # "Task exception was never retrieved" in the process's own stderr/
+        # journalctl, never in the app's log broadcast). That made a real start()
+        # crash look identical to "nothing happened" in the frontend Logs panel.
+        # Wrap the whole body so any failure is logged, broadcast, and _running
+        # is reset — otherwise a crash mid-start also leaves the bot stuck
+        # "running" with no way to retry without a server restart.
+        try:
+            await self._start_inner(mode, style, pairs, capital_pct, broadcast_cb,
+                                    leverage, trader_name, reverse_direction)
+        except Exception as e:
+            log.error(f"Bot start failed: {e}", exc_info=True)
+            self._running = False
+            # Use the broadcast_cb PARAMETER, not self._broadcast_cb/self._broadcast() —
+            # a crash early in _start_inner (before it assigns self._broadcast_cb) would
+            # otherwise leave this silent, the exact failure mode this fix exists for.
+            try:
+                await broadcast_cb({
+                    "type": "bot_status",
+                    "data": {"running": False, "mode": mode, "style": style,
+                            "pairs": pairs, "error": str(e)}
+                })
+            except Exception as be:
+                log.debug(f"Broadcast of start-failure error failed: {be}")
+
+    async def _start_inner(self, mode: str, style: str, pairs: List[str],
+                           capital_pct: float, broadcast_cb: Callable, leverage: float = 5.0,
+                           trader_name: str = "Unknown", reverse_direction: bool = False):
         if self._running:
             log.warning("Bot already running")
             return
@@ -48,10 +77,12 @@ class BotController:
         self._capital_pct = capital_pct
         self._leverage    = leverage
         self._trader_name = trader_name
+        self._reverse_direction = reverse_direction
         self._broadcast_cb = broadcast_cb
         self._running     = True
 
-        log.info(f"Bot starting | mode={mode} style={style} pairs={pairs} capital={capital_pct}% leverage={leverage}x")
+        log.info(f"Bot starting | mode={mode} style={style} pairs={pairs} capital={capital_pct}% "
+                 f"leverage={leverage}x reverse_direction={reverse_direction}")
 
         # Update DB config
         db.update_bot_config(
@@ -66,6 +97,7 @@ class BotController:
             mode=mode,
             leverage=leverage,
             trader_name=trader_name,
+            reverse_direction=reverse_direction,
         )
         self._engine.set_price_getter(self._md.get_price)
         self._engine.set_running(True)
@@ -87,6 +119,14 @@ class BotController:
         # Recover any positions left open from previous session (stop/start without server restart)
         await self._engine.recover_open_positions()
 
+        # Rebuild the adaptive per-pair filter from closed-trade history, so a
+        # restart doesn't forget which pairs have been losing.
+        n_adaptive = await self._engine.warm_start_adaptive()
+        if n_adaptive:
+            blocked = self._engine.adaptive_snapshot().get("blocked", [])
+            log.info(f"Adaptive filter warm-started from {n_adaptive} trades"
+                     + (f" — currently blocking: {', '.join(blocked)}" if blocked else ""))
+
         # Live mode: immediately reconcile with Binance — catch orphan positions not in DB
         # (e.g. entry executed on Binance but Supabase write failed due to server disconnect)
         if self._mode == "live":
@@ -98,10 +138,12 @@ class BotController:
             asyncio.create_task(self._wallet_broadcast_loop()),
             asyncio.create_task(self._price_ticker_loop()),
             asyncio.create_task(self._binance_reconcile_loop()),
-            asyncio.create_task(self._cooldown_log_loop()),
         ]
 
-        await self._broadcast({"type": "bot_status", "data": {"running": True, "mode": mode, "style": style, "pairs": pairs}})
+        await self._broadcast({"type": "bot_status", "data": {
+            "running": True, "mode": mode, "style": style, "pairs": pairs,
+            "reverse_direction": reverse_direction,
+        }})
         log.info("Bot started")
 
     async def stop(self):
@@ -138,31 +180,13 @@ class BotController:
     def is_running(self) -> bool:
         return self._running
 
-    # ─── Quiet Hours ────────────────────────────────────────
-
-    def _in_quiet_hours(self) -> bool:
-        ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-        t = (ist.hour, ist.minute)
-        return QUIET_HOURS_START <= t < QUIET_HOURS_END
-
     # ─── Signal Loop ────────────────────────────────────────
 
     async def _signal_loop(self):
         warm_up_scans = 0          # skip entries for first 2 scans after restart
-        _quiet_announced = False
         while self._running:
             try:
-                in_quiet = self._in_quiet_hours()
-                if in_quiet and not _quiet_announced:
-                    log.warning(
-                        f"QUIET HOURS active (2:00 AM – 8:00 AM IST) — new entries paused"
-                    )
-                    _quiet_announced = True
-                elif not in_quiet and _quiet_announced:
-                    log.info("QUIET HOURS ended — trade entries resumed")
-                    _quiet_announced = False
-
-                await self._process_signals(allow_entry=warm_up_scans >= 2 and not in_quiet)
+                await self._process_signals(allow_entry=warm_up_scans >= 2)
                 if warm_up_scans < 2:
                     warm_up_scans += 1
                     log.info(f"Warm-up scan {warm_up_scans}/2 — entries paused (stale signal guard)")
@@ -233,10 +257,14 @@ class BotController:
                 )
 
                 if can_enter:
+                    # Weak-combo half-sizing removed 2026-07-10 per user request —
+                    # every entry now uses the full capital_pct the bot was started
+                    # with, regardless of whether L2/CVD-divergence fired.
+                    eff_capital = self._capital_pct
                     log.info(f">>> TRADE SIGNAL: {pair} {result.signal_direction.upper()} "
                              f"score={score}/7 positions={open_count+1} price={self._md.get_price(pair)}")
                     task = asyncio.create_task(
-                        self._engine.enter(pair, self._style, result, self._capital_pct, score)
+                        self._engine.enter(pair, self._style, result, eff_capital, score)
                     )
                     task.add_done_callback(
                         lambda t: log.error(f"Enter task failed: {t.exception()}")
@@ -298,35 +326,13 @@ class BotController:
             "style":        self._style,
             "pairs":        self._pairs,
             "capital_pct":  self._capital_pct,
+            "reverse_direction": self._reverse_direction,
             "wallet":       wallet,
             "signals":      self._last_signals,
             "has_position": self._engine.has_open_position() if self._engine else False,
             "open_pairs":   list(self._engine._open.keys()) if self._engine else [],
             "positions":    positions,
         }
-
-    async def _cooldown_log_loop(self):
-        """Har 10 min mein cooldown ka remaining time log karo (agar active hai)."""
-        while self._running:
-            await asyncio.sleep(10 * 60)
-            if not self._running:
-                break
-            try:
-                if self._engine:
-                    status = self._engine.risk.status()
-                    remaining = status.get("cooldown_remaining_sec")
-                    if remaining and remaining > 0:
-                        mins      = remaining // 60
-                        secs      = remaining % 60
-                        level     = status.get("cooldown_level", 0) + 1
-                        total_min = status.get("cooldown_total_min") or "?"
-                        log.warning(
-                            f"⏳ Cooldown active — {mins}m {secs}s remaining "
-                            f"out of {total_min} min (level {level}/3). "
-                            f"No new trades until cooldown expires."
-                        )
-            except Exception as e:
-                log.error(f"Cooldown log loop error: {e}", exc_info=True)
 
     async def _binance_reconcile_loop(self):
         """

@@ -497,16 +497,18 @@ def vwap_retracement(closes: List[float], highs: List[float],
         peak_neg = min(past_devs)
         if peak_neg >= -min_dev_pct:
             return False
-        # Price must have recovered at least 30% of the peak drop
-        recovery_needed = peak_neg * 0.70  # e.g. peak=-0.5% → need to reach -0.35%
+        # Price must have recovered at least 50% of the peak drop (lowered from
+        # 70% on 2026-07-10 — fires on a smaller retracement)
+        recovery_needed = peak_neg * 0.50  # e.g. peak=-0.5% → need to reach -0.25%
         return current_dev >= recovery_needed
 
     if direction == "short":
         peak_pos = max(past_devs)
         if peak_pos <= min_dev_pct:
             return False
-        # Price must have fallen back at least 30% of the peak rise
-        recovery_needed = peak_pos * 0.70  # e.g. peak=+0.5% → need to drop to +0.35%
+        # Price must have fallen back at least 50% of the peak rise (lowered from
+        # 70% on 2026-07-10 — fires on a smaller retracement)
+        recovery_needed = peak_pos * 0.50  # e.g. peak=+0.5% → need to drop to +0.25%
         return current_dev <= recovery_needed
 
     return False

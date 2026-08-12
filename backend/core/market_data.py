@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 import websockets
 
-from config import BINANCE_REST_BASE, BINANCE_WS_BASE, PAIRS, SCALPING, SWING
+from config import BINANCE_REST_BASE, BINANCE_WS_BASE, PAIRS, SCALPING, SWING, style_cfg
 
 log = logging.getLogger("market_data")
 
@@ -47,8 +47,16 @@ class MarketDataManager:
 
     # ─── Public API ─────────────────────────────────────────
 
-    def get_candles(self, pair: str, tf: str) -> List[Candle]:
-        return list(self.candles[pair][tf])
+    def get_candles(self, pair: str, tf: str, closed_only: bool = False) -> List[Candle]:
+        # The last candle in the buffer is the still-forming (live) candle — it
+        # updates in-place on every tick until it closes. Computing EMA/ADX/RSI on
+        # it causes "repaint": a partial candle can briefly look bullish, fire an
+        # entry, then flip neutral when it closes. closed_only=True drops that last
+        # candle so indicators use only completed candles.
+        buf = list(self.candles[pair][tf])
+        if closed_only and len(buf) > 1:
+            return buf[:-1]
+        return buf
 
     def get_orderbook(self, pair: str) -> Dict:
         return self.orderbook[pair]
@@ -72,7 +80,7 @@ class MarketDataManager:
         return self.last_price.get(pair, 0.0)
 
     def is_ready(self, pair: str, style: str) -> bool:
-        cfg = SCALPING if style == "scalping" else SWING
+        cfg = style_cfg(style)
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
         return all(len(self.candles[pair][tf]) >= 50 for tf in confirm_tfs)
 
@@ -98,7 +106,7 @@ class MarketDataManager:
     # ─── Historical Fetch ────────────────────────────────────
 
     async def _fetch_historical(self, pairs: List[str], style: str):
-        cfg = SCALPING if style == "scalping" else SWING
+        cfg = style_cfg(style)
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
         bias_tf     = cfg.get("bias_tf")
         tfs = list(dict.fromkeys(confirm_tfs + ([bias_tf] if bias_tf else [])))  # deduplicate, preserve order
@@ -137,6 +145,15 @@ class MarketDataManager:
                             "volume": float(row[5]),
                         }
                         self.candles[pair][tf].append(candle)
+                    # Seed last_price from REST. Without this it stays 0 until the
+                    # first WS tick, but the WS kline/aggTrade streams only push on
+                    # trade activity — thin pairs (MMT, CHIP, GRAM observed sending
+                    # nothing for 15s+) can stay at 0 indefinitely while having
+                    # enough REST candles for is_ready() and the signal to fire.
+                    # The entry then aborts on "price is 0" every scan cycle.
+                    # Only seed if unset, so a live WS tick always wins.
+                    if data and not self.last_price.get(pair):
+                        self.last_price[pair] = float(data[-1][4])
                     log.info(f"Fetched {len(data)} {tf} candles for {pair}")
         except Exception as e:
             log.error(f"Failed to fetch {tf} klines for {pair}: {e}")
@@ -144,7 +161,7 @@ class MarketDataManager:
     # ─── WebSocket Loop ─────────────────────────────────────
 
     async def _ws_loop(self, pairs: List[str], style: str):
-        cfg = SCALPING if style == "scalping" else SWING
+        cfg = style_cfg(style)
         confirm_tfs = cfg.get("confirm_tfs", [cfg["trend_tf"], cfg["entry_tf"]])
         bias_tf     = cfg.get("bias_tf")
         tfs = list(dict.fromkeys(confirm_tfs + ([bias_tf] if bias_tf else [])))  # deduplicate, preserve order
@@ -182,10 +199,13 @@ class MarketDataManager:
         stream = msg.get("stream", "")
         data   = msg.get("data", {})
 
-        # Identify pair from stream name
+        # Identify pair from stream name — must match the symbol prefix exactly
+        # (stream format is "{symbol}@{type}"). A substring check here is unsafe:
+        # e.g. "iousdt" (IO) is a substring of "biousdt" (BIO), which silently
+        # misattributed every BIO price/kline update to IO.
         pair = None
         for p in pairs:
-            if PAIRS[p].lower() in stream:
+            if stream.startswith(PAIRS[p].lower() + "@"):
                 pair = p
                 break
         if pair is None:

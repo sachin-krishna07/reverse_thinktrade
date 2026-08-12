@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import { SignalData } from "@/hooks/useBotSocket";
 
 interface Props {
@@ -5,6 +6,7 @@ interface Props {
   selectedPairs?: string[];
   running?: boolean;
   knownPairs?: string[];
+  style?: string;
 }
 
 const LAYERS = [
@@ -35,7 +37,7 @@ function getDetail(sig: SignalData, key: string): string {
   }
 }
 
-function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
+function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData; style?: string }) {
   if (!sig) {
     return (
       <div className="bg-[#0a0d14] border border-[#1e2433] rounded-2xl p-4 animate-pulse">
@@ -195,15 +197,19 @@ function PairSignalCard({ pair, sig }: { pair: string; sig?: SignalData }) {
   );
 }
 
-export default function SignalPanel({ signals, selectedPairs, running, knownPairs }: Props) {
-  const signalPairs = selectedPairs?.length ? selectedPairs : Object.keys(signals);
+export default function SignalPanel({ signals, selectedPairs, running, knownPairs, style }: Props) {
+  const basePairs = selectedPairs?.length ? selectedPairs : Object.keys(signals);
+  // Highest score first, so cards climb as their score rises.
+  const signalPairs = [...basePairs].sort((a, b) =>
+    (signals[b]?.total_score ?? -1) - (signals[a]?.total_score ?? -1)
+  );
 
   if (running && signalPairs.length === 0) {
     const skeletonPairs = knownPairs && knownPairs.length > 0 ? knownPairs : null;
     if (skeletonPairs) {
       return (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {skeletonPairs.map((p) => <PairSignalCard key={p} pair={p} sig={undefined} />)}
+          {skeletonPairs.map((p) => <PairSignalCard key={p} pair={p} sig={undefined} style={style} />)}
         </div>
       );
     }
@@ -229,7 +235,9 @@ export default function SignalPanel({ signals, selectedPairs, running, knownPair
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
       {signalPairs.map((p) => (
-        <PairSignalCard key={p} pair={p} sig={signals[p]} />
+        <motion.div key={p} layout transition={{ duration: 0.4, ease: "easeInOut" }}>
+          <PairSignalCard pair={p} sig={signals[p]} style={style} />
+        </motion.div>
       ))}
     </div>
   );

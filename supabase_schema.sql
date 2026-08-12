@@ -16,7 +16,7 @@ CREATE TABLE bot_config (
   id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   is_running    BOOLEAN DEFAULT FALSE,
   mode          TEXT DEFAULT 'demo' CHECK (mode IN ('demo', 'live')),
-  style         TEXT DEFAULT 'scalping' CHECK (style IN ('scalping', 'swing')),
+  style         TEXT DEFAULT 'scalping' CHECK (style IN ('scalping', 'swing', 'vwapfade')),
   capital_pct   DECIMAL(5,2) DEFAULT 1.0,
   selected_pairs TEXT[] DEFAULT ARRAY['BTC','ETH','SOL','BNB','XRP'],
   updated_at    TIMESTAMPTZ DEFAULT NOW()
@@ -63,11 +63,16 @@ CREATE TABLE trades (
   exit_reason       TEXT,
   signals_at_entry  JSONB,
   capital_pct       DECIMAL(5,2),
+  -- Shadow trade: SL wider than MAX_SL_PCT of position size. Fully recorded for
+  -- later study, but excluded from wallet, stats and risk counters, and never
+  -- sent to the exchange. See supabase_migration_shadow.sql.
+  is_shadow         BOOLEAN NOT NULL DEFAULT FALSE,
   entry_time        TIMESTAMPTZ DEFAULT NOW(),
   exit_time         TIMESTAMPTZ,
   duration_seconds  INTEGER,
   created_at        TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX trades_shadow_idx ON trades (mode, status, is_shadow);
 
 -- ─── Open Position ──────────────────────────────────────────
 CREATE TABLE positions (

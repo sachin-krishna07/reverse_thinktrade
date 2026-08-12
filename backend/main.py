@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from config import PAIRS
 from core.bot_controller import BotController
 import core.supabase_client as db
 
@@ -182,6 +183,7 @@ class StartConfig(BaseModel):
     capital_pct: float = 1.0
     leverage:    float = 5.0
     trader_name: str   = "Unknown"
+    reverse_direction: bool = False
 
 
 # ─── REST Endpoints ─────────────────────────────────────────
@@ -190,15 +192,21 @@ class StartConfig(BaseModel):
 async def start_bot(config: StartConfig):
     if bot.is_running():
         return {"ok": False, "msg": "Bot already running"}
+    # Drop pairs no longer in config (e.g. blocklisted coins still cached
+    # in the frontend's localStorage) — unknown pairs crash market_data.
+    valid_pairs = [p for p in config.pairs if p in PAIRS]
+    if not valid_pairs:
+        return {"ok": False, "msg": "No valid pairs selected"}
     asyncio.create_task(
         bot.start(
             mode=config.mode,
             style=config.style,
-            pairs=config.pairs,
+            pairs=valid_pairs,
             capital_pct=config.capital_pct,
             broadcast_cb=broadcast,
             leverage=config.leverage,
             trader_name=config.trader_name,
+            reverse_direction=config.reverse_direction,
         )
     )
     return {"ok": True, "msg": "Bot starting..."}
@@ -226,6 +234,15 @@ async def force_close_pair(pair: str):
 @app.get("/api/bot/status")
 async def get_status():
     return bot.snapshot()
+
+
+@app.get("/api/adaptive")
+async def get_adaptive():
+    """Per-pair adaptive filter state — which pairs it has learned to skip."""
+    engine = getattr(bot, "_engine", None)
+    if engine is None or not hasattr(engine, "adaptive_snapshot"):
+        return {"enabled": False, "pairs": {}, "blocked": []}
+    return engine.adaptive_snapshot()
 
 
 @app.get("/api/trades")
