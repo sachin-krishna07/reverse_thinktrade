@@ -179,7 +179,9 @@ async def ws_endpoint(websocket: WebSocket):
 class StartConfig(BaseModel):
     mode:        str   = "demo"
     style:       str   = "scalping"
-    pairs:       list  = ["BTC", "ETH", "SOL", "BNB", "XRP"]
+    # Must be pairs that exist in config.PAIRS — start_bot filters against it
+    # and refuses to start when nothing survives. Top 5 of the 2026-08-13 screen.
+    pairs:       list  = ["TUT", "PROM", "COTI", "BMT", "STORJ"]
     capital_pct: float = 1.0
     leverage:    float = 5.0
     trader_name: str   = "Unknown"

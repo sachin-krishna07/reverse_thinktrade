@@ -11,21 +11,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-// Blocklisted 2026-07-03 (2.0 trade data): SUI, NEAR, TON, OP, POL, HBAR, NOT, ARB
-// Rebuilt 2026-07-10 to match backend config.py — sorted by exchange volume,
-// high to low. Must stay in sync with PAIRS in backend/config.py.
+// Rebuilt 2026-08-13 — full turnover; every coin from the previous list moved
+// to the other model. The 2026-07-03 blocklist was retired at the same time,
+// but no formerly-blocklisted coin cleared the volatility screen. Sorted by
+// 5m ATR%, high to low. Must stay in sync with PAIRS in backend/config.py —
+// /api/bot/start silently drops any pair the backend doesn't know.
 const ALL_PAIRS = [
-  "BTC", "ETH", "XAUT", "PAXG", "SOL", "XRP", "ZEC", "SKL",
-  "DOGE", "AAVE", "ALLO", "BNB", "UNI", "LINK", "BCH", "ADA",
-  "LTC", "AVAX", "KAITO", "EIGEN", "PARTI", "GRAM", "DOT", "TAO",
-  "JTO", "TRX", "MMT", "PENDLE", "TIA", "MUBARAK", "ONDO", "XLM",
-  "MANA", "ETHFI", "WLD", "LDO", "ZRO", "TRB", "JUP", "PEOPLE",
-  "IO", "JASMY", "WIF", "ORDI", "INJ", "ENA", "1000SATS", "AIGENSYN",
-  "SAHARA", "DYDX", "PENGU", "BLUR", "ASTER", "TRUMP", "KITE", "EDEN",
-  "BIO", "TST", "ALT", "RSR", "CHIP", "SEI", "DOGS", "WCT",
-  "XPL", "DASH", "GIGGLE", "RED", "LISTA", "VANA", "FIL", "CAKE",
-  "KSM", "LAYER", "VIRTUAL", "DUSK", "ZK", "PROVE", "SAGA", "ETC",
-  "BERA", "PNUT", "ACT", "FRAX",
+  "TUT", "PROM", "COTI", "BMT", "STORJ", "BICO", "NIL", "LSK",
+  "ACE", "BANK", "HOLO", "EPIC", "HEI", "HOME", "AT", "2Z",
+  "BOME", "BROCCOLI714", "BANANAS31", "MITO", "OPEN", "RE", "RIF", "DEXE",
+  "EUL", "MOVE", "TLM", "ESP", "EDU", "PUMP", "CRV", "GENIUS",
+  "FLOW", "MAV", "ENSO",
 ];
 
 interface Props {

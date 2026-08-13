@@ -10,14 +10,24 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 
 # ─── Pairs: display name → Binance symbol ───────────────────
-# Blocklisted 2026-07-03 from 2.0 trade history (295 trades, 19-30 Jun):
-# SUI(-$12.3k), NEAR(-$5.3k), TON(22% WR), OP(14% WR), POL(33% WR),
-# HBAR(0% WR), NOT(25% WR), ARB(-$6.2k in 3.0). Re-run pair analysis
-# monthly before re-adding.
+# Rebuilt 2026-08-13 — full turnover. Every pair from the previous list was
+# dropped (those coins now run on the other model) and replaced from a live
+# Binance screen. The 2026-07-03 blocklist (SUI/NEAR/TON/OP/POL/HBAR/NOT/ARB)
+# was retired at the same time: those coins are eligible again, but none of
+# them cleared the volatility bar on this screen, so none are listed below.
 #
-# Rebuilt 2026-07-10 from a live-exchange volume screen (~150 pairs) —
-# cross-checked against Binance's actual symbol list, blocklist re-applied,
-# lowest-liquidity ~20 dropped. Sorted by screen volume, high to low.
+# Screen: universe = symbols listed on BOTH spot and USDT-M perpetual (358 of
+# 527 futures symbols qualify). Excluded everything on the old list, then
+# gated on futures 24h vol >= $1.5M (fill depth), spot 24h vol >= $500k AND
+# <= 8 empty 5m spot candles in 24h (the signal feed is spot — a gappy spot
+# book means gappy indicators), and spread <= 0.08% (scalp cost). 76 pairs
+# passed; these are the top 35 ranked by 5m ATR% — the entry TF the scalping
+# strategy actually trades. Range: 2.57% (TUT) down to 0.39% (ENSO).
+#
+# Screen was run in a thin market: only 26 symbols in the whole usable
+# universe traded over $50M/24h. Dropping the volume floor does NOT surface
+# more volatile names — the $1.5-5M band topped out at 0.63% 5m ATR — so 35
+# is roughly where quality runs out, not an arbitrary cut. Re-run monthly.
 #
 # NOTE: tried switching market data (market_data.py) to Binance FUTURES
 # WebSocket so futures-only listings (no spot market — ~35 candidates:
@@ -30,91 +40,43 @@ BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 # list rather than ship an unverified data path. Re-attempt only after
 # confirming @kline_/@aggTrade actually deliver on futures from the
 # production VPS, not just this dev machine.
+# Sorted by 5m ATR%, high to low (screen of 2026-08-13).
 PAIRS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "XAUT": "XAUTUSDT",
-    "PAXG": "PAXGUSDT",
-    "SOL": "SOLUSDT",
-    "XRP": "XRPUSDT",
-    "ZEC": "ZECUSDT",
-    "SKL": "SKLUSDT",
-    "DOGE": "DOGEUSDT",
-    "AAVE": "AAVEUSDT",
-    "ALLO": "ALLOUSDT",
-    "BNB": "BNBUSDT",
-    "UNI": "UNIUSDT",
-    "LINK": "LINKUSDT",
-    "BCH": "BCHUSDT",
-    "ADA": "ADAUSDT",
-    "LTC": "LTCUSDT",
-    "AVAX": "AVAXUSDT",
-    "KAITO": "KAITOUSDT",
-    "EIGEN": "EIGENUSDT",
-    "PARTI": "PARTIUSDT",
-    "GRAM": "GRAMUSDT",
-    "DOT": "DOTUSDT",
-    "TAO": "TAOUSDT",
-    "JTO": "JTOUSDT",
-    "TRX": "TRXUSDT",
-    "MMT": "MMTUSDT",
-    "PENDLE": "PENDLEUSDT",
-    "TIA": "TIAUSDT",
-    "MUBARAK": "MUBARAKUSDT",
-    "ONDO": "ONDOUSDT",
-    "XLM": "XLMUSDT",
-    "MANA": "MANAUSDT",
-    "ETHFI": "ETHFIUSDT",
-    "WLD": "WLDUSDT",
-    "LDO": "LDOUSDT",
-    "ZRO": "ZROUSDT",
-    "TRB": "TRBUSDT",
-    "JUP": "JUPUSDT",
-    "PEOPLE": "PEOPLEUSDT",
-    "IO": "IOUSDT",
-    "JASMY": "JASMYUSDT",
-    "WIF": "WIFUSDT",
-    "ORDI": "ORDIUSDT",
-    "INJ": "INJUSDT",
-    "ENA": "ENAUSDT",
-    "1000SATS": "1000SATSUSDT",
-    "AIGENSYN": "AIGENSYNUSDT",
-    "SAHARA": "SAHARAUSDT",
-    "DYDX": "DYDXUSDT",
-    "PENGU": "PENGUUSDT",
-    "BLUR": "BLURUSDT",
-    "ASTER": "ASTERUSDT",
-    "TRUMP": "TRUMPUSDT",
-    "KITE": "KITEUSDT",
-    "EDEN": "EDENUSDT",
-    "BIO": "BIOUSDT",
-    "TST": "TSTUSDT",
-    "ALT": "ALTUSDT",
-    "RSR": "RSRUSDT",
-    "CHIP": "CHIPUSDT",
-    "SEI": "SEIUSDT",
-    "DOGS": "DOGSUSDT",
-    "WCT": "WCTUSDT",
-    "XPL": "XPLUSDT",
-    "DASH": "DASHUSDT",
-    "GIGGLE": "GIGGLEUSDT",
-    "RED": "REDUSDT",
-    "LISTA": "LISTAUSDT",
-    "VANA": "VANAUSDT",
-    "FIL": "FILUSDT",
-    "CAKE": "CAKEUSDT",
-    "KSM": "KSMUSDT",
-    "LAYER": "LAYERUSDT",
-    "VIRTUAL": "VIRTUALUSDT",
-    "DUSK": "DUSKUSDT",
-    "ZK": "ZKUSDT",
-    "PROVE": "PROVEUSDT",
-    "SAGA": "SAGAUSDT",
-    "ETC": "ETCUSDT",
-    "BERA": "BERAUSDT",
-    "PNUT": "PNUTUSDT",
-    "ACT": "ACTUSDT",
-    "FRAX": "FRAXUSDT",
+    "TUT": "TUTUSDT",
+    "PROM": "PROMUSDT",
+    "COTI": "COTIUSDT",
+    "BMT": "BMTUSDT",
+    "STORJ": "STORJUSDT",
+    "BICO": "BICOUSDT",
+    "NIL": "NILUSDT",
+    "LSK": "LSKUSDT",
+    "ACE": "ACEUSDT",
+    "BANK": "BANKUSDT",
+    "HOLO": "HOLOUSDT",
+    "EPIC": "EPICUSDT",
+    "HEI": "HEIUSDT",
+    "HOME": "HOMEUSDT",
+    "AT": "ATUSDT",
+    "2Z": "2ZUSDT",
+    "BOME": "BOMEUSDT",
+    "BROCCOLI714": "BROCCOLI714USDT",
+    "BANANAS31": "BANANAS31USDT",
+    "MITO": "MITOUSDT",
+    "OPEN": "OPENUSDT",
+    "RE": "REUSDT",
+    "RIF": "RIFUSDT",
+    "DEXE": "DEXEUSDT",
+    "EUL": "EULUSDT",
+    "MOVE": "MOVEUSDT",
+    "TLM": "TLMUSDT",
+    "ESP": "ESPUSDT",
+    "EDU": "EDUUSDT",
+    "PUMP": "PUMPUSDT",
+    "CRV": "CRVUSDT",
+    "GENIUS": "GENIUSUSDT",
+    "FLOW": "FLOWUSDT",
+    "MAV": "MAVUSDT",
+    "ENSO": "ENSOUSDT",
 }
 
 BINANCE_WS_BASE   = "wss://stream.binance.com:9443/stream"
@@ -129,16 +91,34 @@ SCALPING = {
     "mtf_min_align":     4,               # ALL 4 TFs (1h/30m/15m/5m) must agree — no majority, full alignment required
     "atr_period":        14,
     "atr_sl_mult":       1.35,
-    "sl_entry_r":        1.0,   # changed 2026-07-26 from 2.5 → 1.0 per user request.
-                                 # SL-out now reports -1.00R.
-    "tp_entry_r":        2.5,   # changed 2026-07-26 from 3.5 → 2.5 per user request —
-                                 # this is now the hard-cap exit, not a plain TP.
-    # Continuous trailing stop: once peak R reaches trail_trigger_r, the stop
-    # becomes (peak_r - trail_gap_r) and re-tightens upward every tick as peak_r
-    # grows. Replaces the old single-shot breakeven lock (be_trigger_r/be_stop_r,
-    # removed 2026-07-26 per user request).
-    "trail_trigger_r":   1.1,
-    "trail_gap_r":       0.4,
+    "sl_entry_r":        1.2,   # 2.5 → 1.0 (2026-07-26) → 1.2 (2026-08-13), per user
+                                 # request. SL-out now reports -1.20R.
+                                 #
+                                 # NOTE: risk_amount stays anchored to the 1R distance
+                                 # (atr * atr_sl_mult) — see risk_manager.calculate_position,
+                                 # which does NOT read this key. So an SL-out loses
+                                 # 1.2x risk_amount, and the shadow-trade check against
+                                 # MAX_SL_PCT still measures the 1R distance, not the
+                                 # 1.2R the stop is actually placed at.
+    "tp_entry_r":        2.0,   # 3.5 → 2.5 (2026-07-26) → 1.5 → 2.0 (2026-08-13), per
+                                 # user request. Hard-cap exit, not a plain TP — the
+                                 # trade cannot run past it. Must stay above
+                                 # trail_trigger_r or trailing would never arm.
+    # Single-shot profit lock. The first time peak R touches trail_trigger_r the
+    # stop is locked at (trail_trigger_r - trail_gap_r) and stays there for the
+    # rest of the trade — it does NOT ratchet upward as peak R grows.
+    #
+    # History: a single-shot breakeven lock (be_trigger_r/be_stop_r) was removed
+    # 2026-07-26 in favour of a continuous ratchet; the ratchet was reverted to
+    # single-shot on 2026-08-13 per user request.
+    #
+    # So with these values there are exactly three outcomes:
+    #     peak never reaches 1.5R  -> SL at -1.2R
+    #     peak reaches 1.5R, fades -> exit at +1.0R (whatever the peak was)
+    #     reaches 2.0R             -> TP
+    # A trade that peaks at +1.9R and falls back still exits +1.0R, not +1.4R.
+    "trail_trigger_r":   1.5,
+    "trail_gap_r":       0.5,
     "atr_tp_mult":       20.0,  # effectively disabled — exits via trailing SL only
     "max_hold_sec":      None,  # disabled — exit only via SL / TP / trailing SL
     "min_adx":           22,              # raised from 20 on 2026-07-03 — DB analysis of 329 scalping

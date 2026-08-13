@@ -662,9 +662,9 @@ class TradeEngine:
         trail_gap_r     = cfg.get("trail_gap_r", 0.0)
 
         highest_pnl = 0.0
-        highest_r    = 0.0     # peak R reached — drives the trailing stop
+        highest_r    = 0.0     # peak R reached — arms the lock, does not move it
         trail_armed  = False   # True once highest_r >= trail_trigger_r
-        trail_stop_r = None    # current trailing stop level, once armed
+        trail_stop_r = None    # locked stop level — set once at arm, never changes
         _last_db_write = 0.0  # ts of last DB position write — time-based throttle below
 
         _consecutive_errors = 0  # track back-to-back errors to detect hard failures
@@ -689,16 +689,25 @@ class TradeEngine:
                 highest_pnl = max(highest_pnl, pnl)
                 r_current = pnl / risk_amount if risk_amount > 0 else 0
 
-                # Continuous trailing stop: once peak R reaches trail_trigger_r, arm
-                # the trailing stop at (peak_r - trail_gap_r). Every subsequent tick
-                # that raises peak_r re-tightens the stop upward — it never loosens.
+                # Single-shot profit lock (2026-08-13, per user request — replaces the
+                # continuous ratchet). The first tick whose peak R reaches
+                # trail_trigger_r locks the stop at (trail_trigger_r - trail_gap_r)
+                # and leaves it there for the rest of the trade. It deliberately does
+                # NOT re-tighten as peak_r grows: a trade that runs to +1.4R and falls
+                # back exits at the locked level, not at a ratcheted-up one.
+                #
+                # Anchored to trail_trigger_r, not highest_r, so the locked level is
+                # exactly the configured one. At 0.2s ticks a volatile pair can jump
+                # clean past the trigger in a single tick, and using highest_r here
+                # would silently lock a higher level than configured.
                 if r_current > highest_r:
                     highest_r = r_current
-                if trail_trigger_r is not None and highest_r >= trail_trigger_r:
-                    if not trail_armed:
-                        trail_armed = True
-                        log.info(f"{pair}: trailing armed at +{highest_r:.2f}R")
-                    trail_stop_r = highest_r - trail_gap_r
+                if (trail_trigger_r is not None and not trail_armed
+                        and highest_r >= trail_trigger_r):
+                    trail_armed  = True
+                    trail_stop_r = trail_trigger_r - trail_gap_r
+                    log.info(f"{pair}: profit locked at {trail_stop_r:+.2f}R "
+                             f"(peak +{highest_r:.2f}R)")
 
                 # Convert the R-based trailing stop back to an actual price for
                 # display/DB — inverse of r = pnl/risk_amount, pnl = pnl_pct*pos_size_usd.
