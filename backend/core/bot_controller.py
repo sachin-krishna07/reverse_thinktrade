@@ -1,8 +1,10 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Set
 
-from config import SCALPING, SWING, SIGNAL_BROADCAST_INTERVAL, MIN_SIGNAL_SCORE
+from config import (SCALPING, SWING, SIGNAL_BROADCAST_INTERVAL, MIN_SIGNAL_SCORE,
+                    TRADE_WINDOW_START, TRADE_WINDOW_END)
 from core.market_data import MarketDataManager
 from core.signal_engine import SignalEngine
 from core.risk_manager import RiskManager
@@ -180,13 +182,46 @@ class BotController:
     def is_running(self) -> bool:
         return self._running
 
+    # ─── Trading Window ─────────────────────────────────────
+
+    IST = timezone(timedelta(hours=5, minutes=30))
+
+    def _in_trade_window(self) -> bool:
+        """True when new entries are allowed. Handles a window that crosses
+        midnight (START > END), which the config's 00:00-07:00 does not need
+        but a later edit might."""
+        if TRADE_WINDOW_START is None or TRADE_WINDOW_END is None:
+            return True
+        now = datetime.now(self.IST)
+        t   = (now.hour, now.minute)
+        if TRADE_WINDOW_START <= TRADE_WINDOW_END:
+            return TRADE_WINDOW_START <= t < TRADE_WINDOW_END
+        return t >= TRADE_WINDOW_START or t < TRADE_WINDOW_END
+
+    @staticmethod
+    def _fmt_window() -> str:
+        return (f"{TRADE_WINDOW_START[0]:02d}:{TRADE_WINDOW_START[1]:02d}–"
+                f"{TRADE_WINDOW_END[0]:02d}:{TRADE_WINDOW_END[1]:02d} IST")
+
     # ─── Signal Loop ────────────────────────────────────────
 
     async def _signal_loop(self):
         warm_up_scans = 0          # skip entries for first 2 scans after restart
+        _outside_announced = False # log the window open/close once, not every scan
         while self._running:
             try:
-                await self._process_signals(allow_entry=warm_up_scans >= 2)
+                # Signals keep being scored and broadcast outside the window —
+                # only entries are gated, so the UI stays live all day.
+                in_window = self._in_trade_window()
+                if not in_window and not _outside_announced:
+                    log.warning(f"Outside trading window ({self._fmt_window()}) — "
+                                f"new entries paused; open positions unaffected")
+                    _outside_announced = True
+                elif in_window and _outside_announced:
+                    log.info(f"Trading window open ({self._fmt_window()}) — entries resumed")
+                    _outside_announced = False
+
+                await self._process_signals(allow_entry=warm_up_scans >= 2 and in_window)
                 if warm_up_scans < 2:
                     warm_up_scans += 1
                     log.info(f"Warm-up scan {warm_up_scans}/2 — entries paused (stale signal guard)")

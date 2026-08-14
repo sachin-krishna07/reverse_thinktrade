@@ -188,6 +188,22 @@ MAX_LEVERAGE             = 20.0  # hard ceiling — user can never go above this
 DEFAULT_LEVERAGE         = 5.0   # default if user doesn't specify
 MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7
 
+# ─── Trading Window (IST) ───────────────────────────────────
+# New entries are opened ONLY inside this window, as (hour, minute) in IST
+# (UTC+5:30). Set either side to None to disable the gate entirely.
+#
+# This blocks new entries only. Positions already open are untouched — they
+# run to their own SL/TP/trailing exit whatever the clock says, so a trade
+# opened at 06:55 is not force-closed at 07:00.
+#
+# Added 2026-08-13 per user request: trade 12:00 AM - 8:00 AM IST only.
+# An earlier "quiet hours" gate (2-8 AM IST, commit 9073d92) did the inverse
+# — it named the blocked window — and its comparison only worked when start
+# < end. This names the ALLOWED window and handles wrap-around, so a window
+# that crosses midnight (e.g. 22:00 -> 04:00) works too.
+TRADE_WINDOW_START = (0, 0)    # 12:00 AM IST
+TRADE_WINDOW_END   = (8, 0)    # 8:00 AM IST
+
 # Shadow-trade threshold — max SL distance as a fraction of position size.
 # SL% is exactly risk_amount / position_size_usd, so this caps "how much of the
 # money in the market can one trade lose".
