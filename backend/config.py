@@ -102,23 +102,33 @@ SCALPING = {
                                  # 1.2R the stop is actually placed at.
     "tp_entry_r":        2.0,   # 3.5 → 2.5 (2026-07-26) → 1.5 → 2.0 (2026-08-13), per
                                  # user request. Hard-cap exit, not a plain TP — the
-                                 # trade cannot run past it. Must stay above
-                                 # trail_trigger_r or trailing would never arm.
-    # Single-shot profit lock. The first time peak R touches trail_trigger_r the
-    # stop is locked at (trail_trigger_r - trail_gap_r) and stays there for the
-    # rest of the trade — it does NOT ratchet upward as peak R grows.
+                                 # trade cannot run past it. Must stay above the
+                                 # highest trail_steps trigger, or that step could
+                                 # never fire.
+    # Trailing ladder: [(peak_r_trigger, stop_r), ...]. The first time peak R
+    # touches a trigger, the stop jumps to that step's level. The stop only ever
+    # tightens — a later step can raise it, nothing lowers it, and it does NOT
+    # ratchet continuously between steps. Absent/empty = trailing off (SWING has
+    # no steps, so it exits on SL/TP only).
     #
-    # History: a single-shot breakeven lock (be_trigger_r/be_stop_r) was removed
-    # 2026-07-26 in favour of a continuous ratchet; the ratchet was reverted to
-    # single-shot on 2026-08-13 per user request.
+    # History: single-shot breakeven lock (be_trigger_r/be_stop_r) removed
+    # 2026-07-26 for a continuous ratchet; ratchet reverted to a single-shot lock
+    # 2026-08-13; the scalar trail_trigger_r/trail_gap_r pair was replaced by this
+    # list the same day to allow more than one step.
     #
-    # So with these values there are exactly three outcomes:
-    #     peak never reaches 1.5R  -> SL at -1.2R
-    #     peak reaches 1.5R, fades -> exit at +1.0R (whatever the peak was)
+    #   (0.8, -0.5)  Loss cut, not a profit lock. A trade that showed +0.8R and
+    #                then reversed gives back 0.5R instead of the full 1.2R.
+    #                Chosen over a (1.0, -0.5) step, which tested worse: BANK
+    #                ran +1.0R, dipped below -0.5R, then recovered to +1.73R, so
+    #                the later trigger cost more than it saved.
+    #   (1.5, +1.0)  Profit lock, unchanged.
+    #
+    # Four outcomes now:
+    #     peak below 0.8R          -> SL at -1.2R
+    #     peak 0.8-1.5R, reverses  -> exit at -0.5R
+    #     peak 1.5R+, fades        -> exit at +1.0R
     #     reaches 2.0R             -> TP
-    # A trade that peaks at +1.9R and falls back still exits +1.0R, not +1.4R.
-    "trail_trigger_r":   1.5,
-    "trail_gap_r":       0.5,
+    "trail_steps":       [(0.8, -0.5), (1.5, 1.0)],
     "atr_tp_mult":       20.0,  # effectively disabled — exits via trailing SL only
     "max_hold_sec":      None,  # disabled — exit only via SL / TP / trailing SL
     "min_adx":           22,              # raised from 20 on 2026-07-03 — DB analysis of 329 scalping
@@ -193,7 +203,15 @@ MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7
 # but excluded from wallet, stats, and every risk counter. Once enough shadow
 # trades accumulate, this threshold can be re-tuned on real evidence instead of
 # the two data points available today.
-MAX_SL_PCT = 0.025   # 2.5%
+#
+# Raised 2.5% -> 3.0% on 2026-08-13 per user request, alongside the move to the
+# new 35-pair list, which is screened for volatility and so sits wider on ATR
+# than the list this cap was originally set against.
+#
+# Measured against the 1R distance (atr * atr_sl_mult), NOT against the stop
+# actually placed — sl_entry_r is 1.2, so a pair sitting just under this cap
+# has its real stop ~3.6% away. See risk_manager.calculate_position.
+MAX_SL_PCT = 0.030   # 3.0%
 
 # ─── Adaptive Per-Pair Filter ───────────────────────────────
 # Learns from this bot's OWN closed trades: keeps a rolling window of the last

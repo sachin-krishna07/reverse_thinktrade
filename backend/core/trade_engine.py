@@ -658,13 +658,13 @@ class TradeEngine:
         # None = no hard target at all; trailing is the only way out
         # on the profit side. Every use of tp_r below must be None-guarded.
         tp_r = cfg.get("tp_entry_r", cfg.get("sl_entry_r", 1.0))
-        trail_trigger_r = cfg.get("trail_trigger_r")   # None = trailing disabled
-        trail_gap_r     = cfg.get("trail_gap_r", 0.0)
+        # [(peak_r_trigger, stop_r), ...], lowest trigger first. Empty = no trailing.
+        trail_steps = sorted(cfg.get("trail_steps") or [], key=lambda s: s[0])
 
         highest_pnl = 0.0
-        highest_r    = 0.0     # peak R reached — arms the lock, does not move it
-        trail_armed  = False   # True once highest_r >= trail_trigger_r
-        trail_stop_r = None    # locked stop level — set once at arm, never changes
+        highest_r    = 0.0     # peak R reached — arms steps, does not move the stop
+        trail_armed  = False   # True once any step has fired
+        trail_stop_r = None    # current stop level in R; only ever tightens
         _last_db_write = 0.0  # ts of last DB position write — time-based throttle below
 
         _consecutive_errors = 0  # track back-to-back errors to detect hard failures
@@ -689,25 +689,30 @@ class TradeEngine:
                 highest_pnl = max(highest_pnl, pnl)
                 r_current = pnl / risk_amount if risk_amount > 0 else 0
 
-                # Single-shot profit lock (2026-08-13, per user request — replaces the
-                # continuous ratchet). The first tick whose peak R reaches
-                # trail_trigger_r locks the stop at (trail_trigger_r - trail_gap_r)
-                # and leaves it there for the rest of the trade. It deliberately does
-                # NOT re-tighten as peak_r grows: a trade that runs to +1.4R and falls
-                # back exits at the locked level, not at a ratcheted-up one.
+                # Trailing ladder (config: trail_steps). Each step fires once, the
+                # first tick whose PEAK R reaches its trigger, and moves the stop to
+                # that step's level. The stop only tightens — a step whose level is
+                # not above the current stop is ignored — and it does NOT ratchet
+                # continuously between steps: a trade that peaks +1.9R with steps at
+                # 1.5 still exits at that step's +1.0R, not +1.4R.
                 #
-                # Anchored to trail_trigger_r, not highest_r, so the locked level is
-                # exactly the configured one. At 0.2s ticks a volatile pair can jump
-                # clean past the trigger in a single tick, and using highest_r here
-                # would silently lock a higher level than configured.
+                # Levels are read from the step, never derived from highest_r. At
+                # 0.2s ticks a volatile pair can jump clean past a trigger in one
+                # tick, and using highest_r would silently set a different level
+                # than the one configured.
+                #
+                # A step's level may be NEGATIVE — (0.8, -0.5) cuts the loss on a
+                # trade that showed +0.8R and reversed. Such a step still counts as
+                # armed (the trailing stop governs the exit from then on, replacing
+                # sl_r below), but it is not a profit lock; see profit_locked.
                 if r_current > highest_r:
                     highest_r = r_current
-                if (trail_trigger_r is not None and not trail_armed
-                        and highest_r >= trail_trigger_r):
-                    trail_armed  = True
-                    trail_stop_r = trail_trigger_r - trail_gap_r
-                    log.info(f"{pair}: profit locked at {trail_stop_r:+.2f}R "
-                             f"(peak +{highest_r:.2f}R)")
+                for _trig, _stop in trail_steps:
+                    if highest_r >= _trig and (trail_stop_r is None or _stop > trail_stop_r):
+                        trail_stop_r = _stop
+                        trail_armed  = True
+                        log.info(f"{pair}: trail step {_trig:+.2f}R fired — stop now "
+                                 f"{_stop:+.2f}R (peak +{highest_r:.2f}R)")
 
                 # Convert the R-based trailing stop back to an actual price for
                 # display/DB — inverse of r = pnl/risk_amount, pnl = pnl_pct*pos_size_usd.
@@ -751,7 +756,10 @@ class TradeEngine:
                         "r":               round(r_current, 3),
                         "highest_pnl":     round(highest_pnl, 4),
                         "trailing_armed":  trail_armed,
-                        "profit_locked":   trail_armed,
+                        # Only true when the trailing stop actually sits in profit.
+                        # A negative step (the 0.8R -> -0.5R loss cut) arms trailing
+                        # but locks nothing — the UI's green LOCKED badge would lie.
+                        "profit_locked":   trail_stop_r is not None and trail_stop_r > 0,
                         "trailing_sl":     round(display_sl, 6) if trail_armed else None,
                         "elapsed_sec":     int(elapsed),
                         "size_usd":        round(pos_size_usd, 2),
@@ -771,8 +779,9 @@ class TradeEngine:
                 if tp_r is not None and r_current >= tp_r:
                     exit_reason = "tp"   # hard-cap exit
                 elif trail_armed and r_current <= trail_stop_r:
-                    # trailing stop hit — peaked above trail_trigger_r, then pulled
-                    # back to the current locked level (peak_r - trail_gap_r)
+                    # trailing stop hit — peak cleared a trail_steps trigger, then
+                    # pulled back to that step's level. Note this fires for negative
+                    # steps too, so a "trailing" exit is not necessarily a profit.
                     exit_reason = "trailing"
                 elif not trail_armed and r_current <= -sl_r:
                     exit_reason = "sl"
@@ -1284,12 +1293,14 @@ class TradeEngine:
                 # r_current as the peak; the next live tick from the running monitor
                 # corrects this immediately.
                 cfg = style_cfg(style)
-                trail_trigger_r = cfg.get("trail_trigger_r")
-                trail_gap_r     = cfg.get("trail_gap_r", 0.0)
-                trail_armed = trail_trigger_r is not None and r_current >= trail_trigger_r
+                trail_steps  = sorted(cfg.get("trail_steps") or [], key=lambda s: s[0])
+                trail_stop_r = None
+                for _trig, _stop in trail_steps:
+                    if r_current >= _trig and (trail_stop_r is None or _stop > trail_stop_r):
+                        trail_stop_r = _stop
+                trail_armed = trail_stop_r is not None
                 display_sl = sl_price
                 if trail_armed:
-                    trail_stop_r = r_current - trail_gap_r
                     stop_pnl_pct = trail_stop_r * risk_amount / pos_size_usd if pos_size_usd else 0
                     display_sl = (entry_price * (1 + stop_pnl_pct) if direction == "long"
                                   else entry_price * (1 - stop_pnl_pct))
@@ -1312,7 +1323,9 @@ class TradeEngine:
                     "r":               round(r_current, 3),
                     "highest_pnl":     0,
                     "trailing_armed":  trail_armed,
-                    "profit_locked":   trail_armed,
+                    # see _monitor_position: a negative step arms trailing without
+                    # locking any profit
+                    "profit_locked":   trail_stop_r is not None and trail_stop_r > 0,
                     "trailing_sl":     round(display_sl, 6) if trail_armed else None,
                     "elapsed_sec":     elapsed_sec,
                     "size_usd":        round(pos_size_usd, 2),
