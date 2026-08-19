@@ -214,8 +214,12 @@ MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7
 # — it named the blocked window — and its comparison only worked when start
 # < end. This names the ALLOWED window and handles wrap-around, so a window
 # that crosses midnight (e.g. 22:00 -> 04:00) works too.
-TRADE_WINDOW_START = (0, 0)    # 12:00 AM IST
-TRADE_WINDOW_END   = (8, 0)    # 8:00 AM IST
+# Disabled 2026-08-19 per user request — bot trades all day again. Left as
+# None/None (the documented disable switch above) rather than deleting the
+# gate code in bot_controller.py, so it can be turned back on by just
+# setting these two values again.
+TRADE_WINDOW_START = None    # gate disabled — trade all day
+TRADE_WINDOW_END   = None    # gate disabled — trade all day
 
 # Shadow-trade threshold — max SL distance as a fraction of position size.
 # SL% is exactly risk_amount / position_size_usd, so this caps "how much of the
