@@ -41,6 +41,10 @@ BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 # confirming @kline_/@aggTrade actually deliver on futures from the
 # production VPS, not just this dev machine.
 # Sorted by 5m ATR%, high to low (screen of 2026-08-13).
+#
+# Removed 2026-09-11 — DEXE, EPIC, CRV, per user request after reviewing
+# Version-3.0 trade history 21 Aug–11 Sep (outside the 6PM–1AM IST window):
+# DEXE 0/5 wins, EPIC 3/11, CRV 3/9 — the three worst coins by net PnL.
 PAIRS = {
     "TUT": "TUTUSDT",
     "PROM": "PROMUSDT",
@@ -53,7 +57,6 @@ PAIRS = {
     "ACE": "ACEUSDT",
     "BANK": "BANKUSDT",
     "HOLO": "HOLOUSDT",
-    "EPIC": "EPICUSDT",
     "HEI": "HEIUSDT",
     "HOME": "HOMEUSDT",
     "AT": "ATUSDT",
@@ -65,14 +68,12 @@ PAIRS = {
     "OPEN": "OPENUSDT",
     "RE": "REUSDT",
     "RIF": "RIFUSDT",
-    "DEXE": "DEXEUSDT",
     "EUL": "EULUSDT",
     "MOVE": "MOVEUSDT",
     "TLM": "TLMUSDT",
     "ESP": "ESPUSDT",
     "EDU": "EDUUSDT",
     "PUMP": "PUMPUSDT",
-    "CRV": "CRVUSDT",
     "GENIUS": "GENIUSUSDT",
     "FLOW": "FLOWUSDT",
     "MAV": "MAVUSDT",
@@ -218,8 +219,15 @@ MIN_SIGNAL_SCORE         = 4    # minimum layers out of 7
 # None/None (the documented disable switch above) rather than deleting the
 # gate code in bot_controller.py, so it can be turned back on by just
 # setting these two values again.
-TRADE_WINDOW_START = None    # gate disabled — trade all day
-TRADE_WINDOW_END   = None    # gate disabled — trade all day
+#
+# Re-enabled 2026-09-11 as a NIGHT GATE, per user request: no new entries
+# 6:00 PM - 1:00 AM IST. Version-3.0 history 21 Aug-11 Sep: entries opened
+# in that window went 4/24 wins, net -23,651; the rest of the day 50/121,
+# net +35,493. Values below are the ALLOWED window (01:00 -> 18:00), so the
+# blocked window is END -> START (18:00 -> 01:00). Logs name the blocked
+# window ("Night gate ON (18:00–01:00 IST)") and every skipped signal.
+TRADE_WINDOW_START = (1, 0)     # 1:00 AM IST — entries allowed from here
+TRADE_WINDOW_END   = (18, 0)    # 6:00 PM IST — night gate starts here
 
 # Shadow-trade threshold — max SL distance as a fraction of position size.
 # SL% is exactly risk_amount / position_size_usd, so this caps "how much of the

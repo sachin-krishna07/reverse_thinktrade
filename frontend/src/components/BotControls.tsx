@@ -16,11 +16,12 @@ import {
 // but no formerly-blocklisted coin cleared the volatility screen. Sorted by
 // 5m ATR%, high to low. Must stay in sync with PAIRS in backend/config.py —
 // /api/bot/start silently drops any pair the backend doesn't know.
+// Removed 2026-09-11: DEXE, EPIC, CRV (worst V3 coins 21 Aug–11 Sep).
 const ALL_PAIRS = [
   "TUT", "PROM", "COTI", "BMT", "STORJ", "BICO", "NIL", "LSK",
-  "ACE", "BANK", "HOLO", "EPIC", "HEI", "HOME", "AT", "2Z",
-  "BOME", "BROCCOLI714", "BANANAS31", "MITO", "OPEN", "RE", "RIF", "DEXE",
-  "EUL", "MOVE", "TLM", "ESP", "EDU", "PUMP", "CRV", "GENIUS",
+  "ACE", "BANK", "HOLO", "HEI", "HOME", "AT", "2Z",
+  "BOME", "BROCCOLI714", "BANANAS31", "MITO", "OPEN", "RE", "RIF",
+  "EUL", "MOVE", "TLM", "ESP", "EDU", "PUMP", "GENIUS",
   "FLOW", "MAV", "ENSO",
 ];
 
